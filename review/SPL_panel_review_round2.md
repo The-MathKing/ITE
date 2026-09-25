@@ -84,7 +84,7 @@ This explains the shift register's 0.53 at S = k−1 and 0.61 at S = k. It also 
 
 ## C. Presentation
 
-- **Abstract length.** About 190 words. Check the current SPL limit and cut if needed. The Fig. 3 and Fig. 4 details can go.
+- **Abstract length.** About 200 words (203 by extraction). Check the current SPL limit and cut if needed. The Fig. 3 and Fig. 4 details can go.
 - **Fig. 2(b).** Mostly ".00" cells. It could be one sentence, which would free about 40% of a double-column figure.
 - **Fig. 1.** The √(1−S/k) dotted curves are hidden under the markers. Draw them thicker or in grey, behind the data.
 - **"Theorem 1(2)"** means Eq. (2). Write "Eq. (2)".
