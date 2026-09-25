@@ -1,18 +1,26 @@
 #!/usr/bin/env python3
 """Does short-lag walk structure predict lag-k revisits?
 
-For every (k, S < k) cell of the token-level grid, fit a Bayes-optimal lookup
-table from the exact revisit indicators at lags 1..S-1 (what a shift register
-with S states could see besides the current token) to the lag-k revisit label,
-and report its test AUROC on unseen graphs. Values near 0.5 mean the i.i.d.
-Gaussian surrogate of Corollary 1 is a fair model of the walk tokens.
-Writes results/leakage.json.
+Two checks on the token-level graph pools, both scored by test AUROC on unseen
+graphs for the label y_t = 1[v_t = v_{t-k}]:
+
+  current : Bayes-optimal lookup table on the revisit indicators between the
+            current token and lags 1..S-1, for every (k, S < k) cell.
+  pairwise: logistic regression on ALL pairwise coincidences among the S
+            window positions t, ..., t-S+1 (what an S-state shift register
+            could compare), for k in {4, 8, 12, 16} and S <= k.  A closed walk
+            that leaves and returns along the same path shows up here
+            (check contributed by the pre-submission review).
+
+Values near 0.5 mean the i.i.d. Gaussian surrogate of Corollary 1 is a fair
+model of the walk tokens. Writes results/leakage.json.
 """
 
 import json
 import os
 
 import numpy as np
+import torch
 
 from walk_ssm_barrier import auroc, nb_walks, random_4regular
 
@@ -45,6 +53,48 @@ def main(n=24, T=64, n_train=20000, n_test=4000):
             out[f"k{k}_S{S}"] = auroc(p[key_te], yte)
     vals = list(out.values())
     res = dict(cells=out, min=float(min(vals)), max=float(max(vals)))
+
+    # pairwise coincidences inside the window (subsampled walks keep it fast)
+    Ptr, Pte = Wtr[:6000], Wte[:2000]
+
+    def pair_feats(W, k, S):
+        t = np.arange(max(k, S - 1), T)
+        cols = [W[:, t - a] == W[:, t - b] for a in range(S) for b in range(a + 1, S)]
+        y = (W[:, t] == W[:, t - k]).reshape(-1)
+        X = np.stack(cols, -1).reshape(-1, len(cols)).astype(np.float32) if cols else None
+        return X, y
+
+    def pair_auc(k, S):
+        Xtr, ytr = pair_feats(Ptr, k, S)
+        Xte, yte = pair_feats(Pte, k, S)
+        if Xtr is None:
+            return 0.5
+        Xtr, Xte, yt = torch.tensor(Xtr), torch.tensor(Xte), torch.tensor(ytr, dtype=torch.float32)
+        lin = torch.nn.Linear(Xtr.shape[1], 1)
+        opt = torch.optim.LBFGS(lin.parameters(), max_iter=200, line_search_fn="strong_wolfe")
+
+        def closure():
+            opt.zero_grad()
+            loss = torch.nn.functional.binary_cross_entropy_with_logits(lin(Xtr)[:, 0], yt) \
+                + 1e-4 * lin.weight.pow(2).sum()
+            loss.backward()
+            return loss
+        opt.step(closure)
+        with torch.no_grad():
+            return auroc(lin(Xte)[:, 0].numpy(), yte)
+
+    torch.manual_seed(0)
+    pair = {}
+    for k in [4, 8, 12, 16]:
+        for S in sorted({2, 4, 8, 12, k - 3, k - 2, k - 1, k}):
+            if 2 <= S <= k:
+                pair[f"k{k}_S{S}"] = pair_auc(k, S)
+    res["pairwise"] = pair
+    for off, name in ((3, "le_km3"), (2, "km2"), (1, "km1"), (0, "k")):
+        v = [a for key, a in pair.items()
+             if (lambda k, S: (S <= k - 3) if off == 3 else (S == k - off))(
+                 *map(int, key[1:].split("_S")))]
+        res[f"pairwise_{name}"] = [float(min(v)), float(max(v))]
     os.makedirs("results", exist_ok=True)
     with open(os.path.join("results", "leakage.json"), "w") as fh:
         json.dump(res, fh, indent=1)

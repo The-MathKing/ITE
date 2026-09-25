@@ -2,8 +2,9 @@
 
 `walk_ssm_barrier.py` tests how much state an SSM needs to detect that the
 current token repeats the one `k` steps earlier, the primitive behind cycle
-detection by random-walk graph learners. Theory: exact detection needs
-`S >= k+1` with nilpotent (FIR) dynamics; for `S < k` any linear probe
+detection by random-walk graph learners. Theory: for Gaussian inputs, exact
+detection needs `S >= k+1` and a singular (FIR) state matrix, and is
+impossible for invertible dynamics at any `S`; for `S < k` any linear probe
 explains at most `S/k` of the lagged token's variance (Hankel rank), which
 bounds every readout for Gaussian inputs. The code uses plain PyTorch and
 runs on CPU.
@@ -31,11 +32,13 @@ other jobs are using the CPU, reduce `--workers`.
 | `delay` | gradient fit of an `S`-state diagonal LTI kernel to the delay `z^-k`, against the bound `sqrt(1-S/k)` | `figures/fig1_delay_realization.pdf` |
 | `phase` | token-level lag-`k` revisit detection on non-backtracking walks over random 4-regular graphs, `(S, k)` grid, LTI vs input-dependent step, 3 seeds | `figures/fig2_phase_diagram.pdf` (double column) |
 | `phase` controls | frozen fitted poles, nilpotent shift register, no comparison features | `figures/fig3_auroc_vs_ratio.pdf` |
-| `csl` | 10-class CSL accuracy vs `S`: LTI, input-dependent step, per-lag revisit loss, exact-count reference; pooled-walk curves | `figures/fig4_csl_accuracy.pdf`, Table I |
+| `csl` | 10-class CSL accuracy vs `S`: LTI, input-dependent step, per-lag revisit loss, trained shift register, exact-count reference; pooled-walk curves | `figures/fig4_csl_accuracy.pdf`, Table I |
 
 `leakage_check.py` tests whether short-lag walk structure predicts lag-`k`
-revisits (it does not: AUROC about 0.5), which supports the i.i.d. Gaussian
-surrogate used by Corollary 1. It writes `results/leakage.json`.
+revisits. Pairwise coincidences among the `S` most recent tokens do not for
+`S <= k-3` (AUROC about 0.5), so the i.i.d. Gaussian surrogate of Corollary 1
+is fair there; within two lags of `k` they reach AUROC 0.53-0.67. It writes
+`results/leakage.json`.
 
 The figures are sized for IEEE layouts: 3.5 in for a single column,
 7.16 in for the full text width. Text is set in 8 pt serif with

@@ -10,3 +10,4 @@ paper/*.out
 paper/main.pdf
 run_full.log
 run_rev.log
+run_r2.log

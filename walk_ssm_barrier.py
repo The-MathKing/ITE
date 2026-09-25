@@ -401,7 +401,8 @@ def job_csl(cfg):
     C = len(CSL_SKIPS)
     aux_w, aux_win = cfg.get("aux_weight", 0.0), cfg.get("aux_window", 16)
     model = WalkSSM(df, cfg["S"], cfg["selective"], d_hidden=cfg["d_hidden"],
-                    n_out=C, pool=True, aux=aux_win if aux_w > 0 else 0)
+                    n_out=C, pool=True, aux=aux_win if aux_w > 0 else 0,
+                    kind=cfg.get("kind", "diag"))
     opt = torch.optim.AdamW(model.parameters(), lr=cfg["lr"], weight_decay=0.01)
 
     def batch(y, r, walks=False, T=T):
@@ -620,6 +621,11 @@ def make_configs(args):
     for S in ([2] if q else [2, 4, 8]):
         for seed in range(1 if q else args.csl_seeds):
             cfgs["csl"].append(dict(csl_base, model="lti_pool", S=S, seed=seed))
+    # trained shift register: exact access to lags 0..S-1 with the same readout,
+    # pooling and graph-level supervision as the learned SSMs
+    for S in ([4, 9] if q else [4, 6, 8, 9, 12, 16, 32]):
+        for seed in range(1 if q else args.csl_seeds):
+            cfgs["csl"].append(dict(csl_base, model="shift", kind="shift", S=S, seed=seed))
     for S in Ss_csl:                           # explicit-window reference, W = S
         for seed in range(1 if q else args.csl_seeds):
             cfgs["csl"].append(dict(
@@ -714,11 +720,12 @@ def fig_delay(res, out):
     markers = ["o", "s", "^", "D"]
     for i, k in enumerate(ks):
         rr = sorted((r for r in res if r["k"] == k), key=lambda r: r["S"])
+        Sb = np.linspace(1, k, 100)
+        ax.semilogy(Sb, np.sqrt(np.clip(1 - Sb / k, 1e-9, None)), color=colors[i % 4],
+                    lw=3.0, alpha=0.3, solid_capstyle="butt", zorder=1)
         ax.semilogy([r["S"] for r in rr], [max(r["rel_l2_error"], 1e-6) for r in rr],
-                    color=colors[i % 4], marker=markers[i % 4], label=f"$k={k}$")
-        Sb = np.arange(1, k)
-        ax.semilogy(Sb, np.sqrt(1 - Sb / k), color=colors[i % 4], ls=":", lw=1.0)
-    ax.plot([], [], color=INK2, ls=":", lw=1.0, label=r"bound $\sqrt{1-S/k}$")
+                    color=colors[i % 4], marker=markers[i % 4], label=f"$k={k}$", zorder=3)
+    ax.plot([], [], color=INK2, lw=3.0, alpha=0.3, label=r"bound $\sqrt{1-S/k}$")
     ax.set_xlabel("Real state dimension $S$")
     ax.set_ylabel(r"$\|h-\delta_k\|_2$ (best fit)")
     ax.set_ylim(8e-4, 1.5)
@@ -732,49 +739,35 @@ def fig_phase(res, out):
     plt = ieee_style()
     from matplotlib.colors import LinearSegmentedColormap
     seq = LinearSegmentedColormap.from_list("blue_seq", ["#f4f8fd", "#9cc3ee", BLUE, "#0d3b73"])
-    div = LinearSegmentedColormap.from_list("div", [BLUE, "#e9e8e4", ORANGE])
-    lti, sel = cell_means(res, "lti"), cell_means(res, "selective")
+    lti = cell_means(res, "lti")
     ks = sorted({k for k, _ in lti})
     Ss = sorted({S for _, S in lti})
     Z = np.array([[np.mean(lti[(k, S)]) for k in ks] for S in Ss])
-    D = np.array([[np.mean(sel[(k, S)]) - np.mean(lti[(k, S)]) for k in ks] for S in Ss])
-    fig, axes = plt.subplots(1, 2, figsize=(TEXT_W, 2.2), sharey=True,
-                             gridspec_kw=dict(wspace=0.32))
-    im0 = axes[0].imshow(Z, origin="lower", aspect="auto", cmap=seq, vmin=0.5, vmax=1.0)
-    im1 = axes[1].imshow(D, origin="lower", aspect="auto", cmap=div, vmin=-0.1, vmax=0.1)
+    fig, ax = plt.subplots(figsize=(COL_W, 2.45))
+    im = ax.imshow(Z, origin="lower", aspect="auto", cmap=seq, vmin=0.5, vmax=1.0)
     for i in range(len(Ss)):
         for j in range(len(ks)):
-            axes[0].text(j, i, f"{Z[i, j]:.2f}".lstrip("0"), ha="center", va="center",
-                         fontsize=6, color="white" if Z[i, j] > 0.8 else "#0b0b0b")
-            dtxt = ".00" if abs(D[i, j]) < 0.005 else f"{D[i, j]:+.2f}".replace("0.", ".")
-            axes[1].text(j, i, dtxt, ha="center", va="center",
-                         fontsize=6, color="#0b0b0b")
-    for ax in axes:
-        xs, ys = [], []
-        for j, k in enumerate(ks):
-            i0 = next((i for i, S in enumerate(Ss) if S >= k), len(Ss))
-            xs += [j - 0.5, j + 0.5]
-            ys += [i0 - 0.5, i0 - 0.5]
-        ax.plot(xs, ys, color="#e34948", lw=1.4, ls="--", label="$S=k$ (Hankel threshold)")
-        ax.set_xticks(range(len(ks)), [str(k) for k in ks])
-        ax.set_yticks(range(len(Ss)), [str(S) for S in Ss])
-        ax.set_xlabel("Revisit lag $k$")
-        ax.grid(False)
-    xe, ye = [], []
-    for j in range(len(ks)):
-        i0 = next((i for i in range(len(Ss)) if Z[i, j] >= PHASE_THR), len(Ss))
+            ax.text(j, i, f"{Z[i, j]:.2f}".lstrip("0"), ha="center", va="center",
+                    fontsize=5.5, color="white" if Z[i, j] > 0.8 else "#0b0b0b")
+    xs, ys, xe, ye = [], [], [], []
+    for j, k in enumerate(ks):
+        i0 = next((i for i, S in enumerate(Ss) if S >= k), len(Ss))
+        i1 = next((i for i in range(len(Ss)) if Z[i, j] >= PHASE_THR), len(Ss))
+        xs += [j - 0.5, j + 0.5]
+        ys += [i0 - 0.5, i0 - 0.5]
         xe += [j - 0.5, j + 0.5]
-        ye += [i0 - 0.5, i0 - 0.5]
-    axes[0].plot(xe, ye, color="#0b0b0b", lw=1.0, ls=":", label=f"AUROC $\\geq$ {PHASE_THR}")
-    axes[0].set_title("(a) LTI, learned poles: test AUROC")
-    axes[1].set_title(r"(b) Input-dependent $\Delta_t$ minus LTI")
-    axes[0].set_ylabel("Real state dimension $S$")
-    h, l = axes[0].get_legend_handles_labels()
-    fig.legend(h, l, loc="lower center", bbox_to_anchor=(0.46, 0.99), ncol=2, fontsize=7)
-    for im, ax, lab in ((im0, axes[0], "AUROC"), (im1, axes[1], r"$\Delta$AUROC")):
-        cb = fig.colorbar(im, ax=ax, fraction=0.05, pad=0.02)
-        cb.set_label(lab)
-        cb.outline.set_linewidth(0.4)
+        ye += [i1 - 0.5, i1 - 0.5]
+    ax.plot(xs, ys, color="#e34948", lw=1.4, ls="--", label="$S=k$ (Hankel threshold)")
+    ax.plot(xe, ye, color="#0b0b0b", lw=1.0, ls=":", label=f"AUROC $\\geq$ {PHASE_THR}")
+    ax.set_xticks(range(len(ks)), [str(k) for k in ks])
+    ax.set_yticks(range(len(Ss)), [str(S) for S in Ss])
+    ax.set_xlabel("Revisit lag $k$")
+    ax.set_ylabel("Real state dimension $S$")
+    ax.grid(False)
+    ax.legend(loc="lower center", bbox_to_anchor=(0.5, 1.0), ncol=2, fontsize=6.5)
+    cb = fig.colorbar(im, ax=ax, fraction=0.05, pad=0.02)
+    cb.set_label("Test AUROC")
+    cb.outline.set_linewidth(0.4)
     fig.savefig(out)
     plt.close(fig)
 
@@ -870,7 +863,7 @@ def phase_stats(res):
     return out
 
 
-def _csl_table(res, models=("lti", "selective", "oracle", "lti_aux")):
+def _csl_table(res, models=("lti", "selective", "oracle", "lti_aux", "shift")):
     tab = {}
     for model in models:
         for S in sorted({r["S"] for r in res}):
@@ -885,7 +878,7 @@ def fig_csl_acc(res, out):
     plt = ieee_style()
     tab = _csl_table(res)
     fig, ax = plt.subplots(figsize=(COL_W, 2.1))
-    for model in ("lti", "selective", "lti_aux", "oracle"):
+    for model in ("lti", "selective", "lti_aux", "shift", "oracle"):
         Ss = sorted(S for (m, S) in tab if m == model)
         if not Ss:
             continue
@@ -906,9 +899,9 @@ def fig_csl_acc(res, out):
 
 
 def csl_onsets(res, horizons, thr=0.8):
-    tab = _csl_table(res, ("lti", "selective", "oracle"))
+    tab = _csl_table(res, ("lti", "selective", "oracle", "shift"))
     rows = []
-    for model in ("lti", "selective", "oracle"):
+    for model in ("lti", "selective", "oracle", "shift"):
         Ss = sorted(S for (m, S) in tab if m == model)
         for c, s in enumerate(CSL_SKIPS):
             onset = next((S for S in Ss if tab[(model, S)]["per_class"][c] >= thr), None)
