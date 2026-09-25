@@ -39,7 +39,7 @@ bounding boxes.
 
 * `results/summary.json`: all metrics, horizons and onsets
 * `results/*.csv`
-* the four PDFs, or just confirm they rendered
+* `figures/*.pdf`: the four IEEE-formatted figures
 
 ## Manuscript (IEEE Signal Processing Letters)
 
