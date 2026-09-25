@@ -1,0 +1,328 @@
+MEMORY IS EXPRESSIVITY: A HANKEL-RANK BARRIER FOR STATE-SPACE MODELS
+ON GRAPH RANDOM WALKS
+
+Olivia Kim and Aryan Padarthi
+Allen Independent School District, Allen, TX, USA
+olivia.kim@student.allenisd.org; aryan.padarthi@student.allenisd.org
+Code and data: https://github.com/The-MathKing/ITE
+
+Target: IEEE Signal Processing Letters (4 pages of content + 1 page of
+references max, single-anonymous review).
+
+Notation used in this plain-text copy:
+  x_t        = x with subscript t
+  A^k        = A to the power k
+  w^T        = transpose of w
+  sum_{m>=1} = sum over m >= 1
+  ||.||      = norm;  E[.] = expectation;  1[.] = indicator
+  [n]        = citation number n (see REFERENCES at the end)
+All numbers below are the final results from results/summary.json.
+
+========================================================================
+ABSTRACT
+========================================================================
+
+Walk-based graph learners feed random walks, decorated with random node
+features, into a sequence model; recognising a cycle of length k then
+reduces to deciding whether the token at time t equals the token at time
+t-k. We show that this primitive imposes a sharp memory requirement on
+linear time-invariant (LTI) state-space models (SSMs): with real state
+dimension S < k, the Hankel matrix of any lag-k probe has rank at most S
+while its target has k unit singular values, so the probe error has
+H-infinity norm at least one and mean-squared error at least 1/k; the
+bound is tight at S = k. On circular skip-link (CSL) graphs, where 1-WL
+message passing is at chance, we compute exactly the non-backtracking
+return horizon W*(s) that separates each class; an exact-count estimator
+with window S recognises every one of the ten classes at the first tested
+S >= W*(s). A direct fit attains the bound at S = k, but end-to-end
+trained diagonal SSMs need a median of 4.0x the Hankel minimum for
+reliable token-level lag detection, input-dependent (selective) dynamics
+do not reduce this, and on CSL the best trained model reaches 60.4%
+against 98.3% for the oracle.
+
+Index Terms: State-space models, graph neural networks, Hankel operators,
+expressivity, random walks.
+
+========================================================================
+I. INTRODUCTION
+========================================================================
+
+Message-passing graph neural networks (GNNs) are bounded by the
+1-dimensional Weisfeiler-Leman (1-WL) test [1], [2] and cannot, for
+instance, separate the regular circular skip-link (CSL) graphs [3], [4].
+Walk-based learners circumvent this by reading random walks as sequences
+[5], [6], and random node features make walk revisits observable [7],
+[8]. With structured state-space models (SSMs) [9]-[11] now used as the
+sequence backbone for graphs [6], [12], [13], a basic question arises:
+how much state does a walk-based SSM need to see a cycle?
+
+CRaWl [5] fixes an explicit window s and provably detects cycles up to
+length s; an SSM has no window, only a state. We answer the question with
+classical realisation theory [14]. Our contributions are:
+  (i)   an exact impossibility result and a tight quantitative bound, via
+        Hankel-rank and Nehari/AAK arguments [15]-[17], showing that an
+        LTI SSM needs real state S >= k to probe lag-k revisits;
+  (ii)  an exact, graph-level prediction of the state each CSL class
+        needs, computed from the non-backtracking return profile [18];
+  (iii) experiments separating the information barrier from the
+        optimisation overhead of gradient-trained LTI and selective SSMs.
+Our results complement the copying lower bounds of [19] by giving a
+signal-processing characterisation specific to graph walks.
+
+========================================================================
+II. PROBLEM SETTING
+========================================================================
+
+Let G = (V, E) be a graph and v_0, v_1, ..., v_T a non-backtracking (NB)
+walk (v_{t+1} != v_{t-1}). Each walk receives fresh features
+r_v ~ N(0, I_d), i.i.d. over v, and the model reads x_t = r_{v_t}. A
+walk-based SSM with real state s_t in R^S is
+
+    (1)   s_t = A_t s_{t-1} + B_t x_t,      y_hat_t = g(s_t, x_t),
+
+with arbitrary readout g. The model is LTI if A_t = A and B_t = B for all
+t, and selective if (A_t, B_t) depend on x_t as in Mamba [11]. The lag-k
+revisit label is y_t = 1[v_t = v_{t-k}]; on NB walks, y_t = 1 exactly when
+the last k steps close an NB cycle, so revisit statistics are cycle
+statistics. Because features are continuous, y_t = 1[x_t = x_{t-k}]
+almost surely.
+
+========================================================================
+III. THEORY
+========================================================================
+
+PROPOSITION 1 (Exact detection). If S < k, then for every LTI pair
+(A, B) and every readout g there exist two token sequences with the same
+(s_t, x_t) but y_t = 1 and y'_t = 0.
+
+Proof. By Cayley-Hamilton, A^S = sum_{i=0}^{S-1} c_i A^i, hence
+A^k = sum_{i=0}^{S-1} c_i A^{i+k-S}, where the exponents lie in
+{k-S, ..., k-1}, which is a subset of {1, ..., k-1}. Fix any sequence
+with x_{t-k} = x_t and any e != 0. Set x'_{t-k} = x_{t-k} + e and
+x'_{t-j} = x_{t-j} - c_{j-k+S} e for j in {k-S, ..., k-1}, leaving all
+other tokens (including x_t) unchanged. Then
+    s_t - s'_t = sum_{j>=1} A^j B (x_{t-j} - x'_{t-j})
+               = -A^k B e + sum_i c_i A^{i+k-S} B e = 0,
+while y'_t = 0.  [end of proof]
+
+Proposition 1 is a worst-case statement. The next result quantifies how
+badly any linear read-out of the state must fail on typical inputs. A
+lag-k probe z_t = c^T s_t + b^T x_t estimates w^T x_{t-k} (||w|| = 1).
+Its error z_t - w^T x_{t-k} = sum_{m>=0} e_m x_{t-m} has impulse response
+e_0 = c^T B + b^T (which can be cancelled by b) and
+e_m = c^T A^m B - delta_{mk} w^T for m >= 1, with transfer function
+E(z) = sum_{m>=1} e_m z^{-m}.
+
+THEOREM 1 (Hankel barrier). If S < k, every LTI probe satisfies
+
+    (2)   sup_omega || E(e^{j omega}) ||  >=  1,
+    (3)   sum_{m=1}^{2k-1} min(m, 2k-m) ||e_m||^2  >=  1,
+
+and hence, for white unit-variance tokens,
+E[(z_t - w^T x_{t-k})^2] >= 1/k. Conversely, for S = k and every
+epsilon > 0 there is an LTI probe with mean-squared error below epsilon.
+
+Proof. Let H_k(f) be the k x kd block-Hankel section with (i, j) block
+f_{i+j+1}, 0 <= i, j < k. For the model,
+h_{i+j+1} = (c^T A^i)(A^{j+1} B), so rank H_k(h) <= S. The target
+delta_{m,k} w^T yields a block anti-diagonal matrix with k singular
+values equal to ||w|| = 1. By Eckart-Young,
+||H_k(e)||_2 >= sigma_{S+1}(H_k(delta w^T)) = 1. A finite section is
+dominated by the Hankel operator norm, which by Nehari's theorem [15] is
+at most ||E||_inf; this gives (2). Bounding the spectral norm by the
+Frobenius norm, where e_m occurs min(m, 2k-m) times, gives (3); and
+min(.) <= k gives the mean-squared bound. For tightness, take A = rho P
+with P the k-cycle permutation, B = e_1 w^T, c = rho^{-k} e_1, and b to
+cancel e_0. Then e_m = rho^{m-k} w^T for m = 2k, 3k, ... and 0 otherwise,
+so the error is rho^{2k} / (1 - rho^{2k}), which goes to 0 as rho -> 0.
+[end of proof]
+
+REMARK 1. The tight construction needs gains of order rho^{-k}, i.e. the
+near-optimal LTI probe is exponentially ill-conditioned in k. The bound
+also limits precision, not information: for S < k a probe can still be
+partially correlated with the lag-k token (MSE >= 1/k < 1), so statistics
+pooled over long walks can remain informative below the threshold.
+Selective SSMs break the factorisation h_{i+j+1} = (c^T A^i)(A^{j+1} B),
+so Theorem 1 does not apply to them; we test them empirically.
+
+A. Graph-level consequence: NB return horizons
+
+Let rho_G(l) = Pr[v_l = v_0] for the stationary NB walk. We compute it
+exactly from the NB (Hashimoto) operator on directed edges. Theorem 1
+implies that an LTI walk-SSM with state S has (approximate) linear access
+to revisits only at lags l <= S. For a family {G_s} we define the
+distinguishability horizon
+
+    (4)   W*(s) = min { W :  max_{l<=W} | rho_{G_s}(l) - rho_{G_s'}(l) | > tau
+                             for all s' != s },
+
+with tau = 2 x 10^{-3}. For the ten CSL classes (n = 41, skip
+s in {2, 3, 4, 5, 6, 9, 11, 12, 13, 16}), W*(s) ranges from 3 to 8
+(Table I). The prediction is that class s becomes recognisable once
+S >= W*(s).
+
+========================================================================
+IV. EXPERIMENTS
+========================================================================
+
+Models. We use one diagonal complex SSM layer with S4D-Lin
+initialisation [10]. It has floor(S/2) complex modes plus one real mode
+if S is odd, so its real state dimension is exactly S. The
+discretisation is A = exp(Delta Lambda) and B_t = Delta B. The LTI
+variant learns Delta per mode; the selective variant sets
+Delta_t = softplus(W_Delta x_t + b). The readout g sees
+[Re s_t, Im s_t, x_t] and comparison features (Q x_t - K s_t)^2
+(elementwise), followed by a two-layer MLP. It is a pointwise map of
+(s_t, x_t) and is therefore covered by Proposition 1. Features are d = 8
+dimensional; training uses AdamW with a cosine schedule. All runs are on
+CPU, and the code regenerates every figure and number in this letter.
+
+Delay realisation. We first fit the impulse response of an S-state
+diagonal LTI system to the pure delay delta_{m,k} (m >= 1) by gradient
+descent, keeping the best of four restarts (Fig. 1). Below the bound
+(S < k), the median relative l2 error is 0.81 (the minimum is 0.45).
+Above it, the median is 0.01. An error of 0.1 is first reached at a
+median of 1.0 k states, so the Hankel bound is attained in practice when
+the delay is fitted directly.
+
+[FIGURE 1 -- file: figures/fig1_delay_realization.pdf, one column]
+Caption: Best gradient fit of an S-state diagonal LTI impulse response to
+the lag-k delay. Dotted lines mark the Hankel threshold S = k.
+
+Token-level phase diagram. We train on NB walks of length 64 over 256
+random 4-regular graphs (n = 24), built as unions of two Hamiltonian
+cycles, and test on 64 unseen graphs. Fig. 2 reports test AUROC for the
+lag-k revisit label. Below the bound (S < k), the mean AUROC is 0.61
+(LTI) and 0.61 (selective). For S >= 4k it is 0.99 and 0.99. Where an
+AUROC of 0.95 is reached, it takes a median of 4.0x (LTI) and 3.4x
+(selective) the Hankel minimum S = k. This holds for all 9 lags up to
+k = 16, so the requirement grows linearly in k as Theorem 1 predicts,
+but with a constant roughly four times larger than in the direct fit of
+Fig. 1. The overhead is thus a property of end-to-end training through
+the readout rather than of realisability. Below the bound, AUROC stays
+above 0.5, which reflects the partial correlation allowed by Remark 1.
+Selectivity changes AUROC by +0.000 on average (mean absolute difference
+0.008), so input-dependent dynamics do not escape the memory requirement.
+
+[FIGURE 2 -- file: figures/fig2_phase_diagram.pdf, full page width]
+Caption: Test AUROC for lag-k revisit detection on NB walks over random
+4-regular graphs. Red dashed line: Hankel bound S = k (Theorem 1). Dotted
+line: first S reaching an AUROC of 0.95.
+
+CSL classification. Each training example is one NB walk (length 128) on
+a CSL graph, and the class is predicted from mean-pooled features. At
+test time, each graph is judged from 16 walks of length 256. As a
+reference we use an oracle that applies multinomial logistic regression
+to the exact revisit frequencies at lags 1, ..., S. This is the best a
+window-S reader can do. Figs. 3 and 4 and Table I summarise three seeds.
+The oracle reaches 98.3% and exceeds 95% from S = 8. For all 10 classes,
+its onset is exactly the first tested S >= W*(s) (the grid contains even
+S only), which confirms the horizon analysis. Trained walk-SSMs rise well
+above the 10% 1-WL level but remain far below the oracle: the best LTI
+model reaches 60.4 +/- 2.6% at S = 64, and the best selective model
+reaches 55.2 +/- 2.8% at S = 64. Only 3 (LTI) and 3 (selective) classes
+reach 80% accuracy at any S <= 64. One of them (s = 2) does so below its
+horizon, which is possible because pooling 16 x 256 tokens amplifies the
+partial correlation left by Remark 1. On graphs, therefore, the binding
+constraint in practice is not the Hankel capacity but the optimisation
+of the precise, ill-conditioned delays that Theorem 1 requires for every
+class-specific lag simultaneously.
+
+[FIGURE 3 -- file: figures/fig3_csl_accuracy.pdf, one column]
+Caption: CSL test accuracy against real state dimension (mean +/- std
+over three seeds). The oracle uses exact revisit counts at lags <= S.
+
+[FIGURE 4 -- file: figures/fig4_csl_threshold.pdf, one column]
+Caption: Per-class onset (smallest S with class accuracy >= 80%) against
+the predicted horizon W*(s). Hollow triangles: classes never reaching 80%
+for S <= 64.
+
+TABLE I. CSL horizons W*(s) and observed per-class onsets S
+("--": not reached).
+
+    s          |  2   3   4   5   6   9  11  12  13  16
+    -----------+----------------------------------------
+    W*(s)      |  3   4   5   6   7   8   7   8   5   7
+    Oracle     |  4   4   6   6   8   8   8   8   6   8
+    LTI        |  2   6  --  --  --  --  --  --  32  --
+    Selective  |  2   8  --  --  --  --  --  --  64  --
+
+========================================================================
+V. CONCLUSION
+========================================================================
+
+For walk-based graph learners with LTI state-space backbones, seeing a
+cycle of length k costs at least k real state dimensions. This is a
+Hankel-rank fact with a tight H-infinity and mean-squared form. Combined
+with exact non-backtracking return horizons, it predicts the state size
+at which each CSL class becomes separable, and an exact-count oracle
+confirms the prediction for all ten classes. Direct fits attain the
+bound, but end-to-end trained diagonal SSMs, with or without
+selectivity, need about four times the minimal state for token-level
+detection and stay far from the oracle on CSL. This points to the
+optimisation of precise delays, rather than capacity alone, as the
+practical bottleneck. Natural extensions are lower bounds for selective
+SSMs and better-conditioned delay parameterisations for graph SSMs.
+
+========================================================================
+REFERENCES
+========================================================================
+(Check volume/page details against the publishers before submitting.)
+
+[1]  K. Xu, W. Hu, J. Leskovec, and S. Jegelka, "How powerful are graph
+     neural networks?" in Proc. Int. Conf. Learn. Represent. (ICLR), 2019.
+[2]  C. Morris, M. Ritzert, M. Fey, W. L. Hamilton, J. E. Lenssen,
+     G. Rattan, and M. Grohe, "Weisfeiler and Leman go neural:
+     Higher-order graph neural networks," in Proc. AAAI Conf. Artif.
+     Intell., 2019.
+[3]  R. L. Murphy, B. Srinivasan, V. Rao, and B. Ribeiro, "Relational
+     pooling for graph representations," in Proc. Int. Conf. Mach. Learn.
+     (ICML), 2019.
+[4]  V. P. Dwivedi, C. K. Joshi, A. T. Luu, T. Laurent, Y. Bengio, and
+     X. Bresson, "Benchmarking graph neural networks," J. Mach. Learn.
+     Res., vol. 24, 2023.
+[5]  J. Toenshoff, M. Ritzert, H. Wolf, and M. Grohe, "Walking out of the
+     Weisfeiler Leman hierarchy: Graph learning beyond message passing,"
+     Trans. Mach. Learn. Res., 2023.
+[6]  D. Chen, T. H. Schulz, and K. Borgwardt, "Learning long range
+     dependencies on graphs via random walks," in Proc. Int. Conf. Learn.
+     Represent. (ICLR), 2025.
+[7]  R. Abboud, I. I. Ceylan, M. Grohe, and T. Lukasiewicz, "The
+     surprising power of graph neural networks with random node
+     initialization," in Proc. Int. Joint Conf. Artif. Intell. (IJCAI),
+     2021.
+[8]  R. Sato, M. Yamada, and H. Kashima, "Random features strengthen
+     graph neural networks," in Proc. SIAM Int. Conf. Data Mining (SDM),
+     2021.
+[9]  A. Gu, K. Goel, and C. Re, "Efficiently modeling long sequences with
+     structured state spaces," in Proc. Int. Conf. Learn. Represent.
+     (ICLR), 2022.
+[10] A. Gu, A. Gupta, K. Goel, and C. Re, "On the parameterization and
+     initialization of diagonal state space models," in Adv. Neural Inf.
+     Process. Syst. (NeurIPS), 2022.
+[11] A. Gu and T. Dao, "Mamba: Linear-time sequence modeling with
+     selective state spaces," in Proc. Conf. Lang. Model. (COLM), 2024.
+[12] C. Wang, O. Tsepa, J. Ma, and B. Wang, "Graph-Mamba: Towards
+     long-range graph sequence modeling with selective state spaces,"
+     arXiv preprint arXiv:2402.00789, 2024.
+[13] A. Behrouz and F. Hashemi, "Graph Mamba: Towards learning on graphs
+     with state space models," in Proc. ACM SIGKDD Conf. Knowl. Discov.
+     Data Mining (KDD), 2024.
+[14] B. L. Ho and R. E. Kalman, "Effective construction of linear
+     state-variable models from input/output functions,"
+     Regelungstechnik, vol. 14, no. 12, pp. 545-548, 1966.
+[15] Z. Nehari, "On bounded bilinear forms," Ann. Math., vol. 65, no. 1,
+     pp. 153-162, 1957.
+[16] V. M. Adamjan, D. Z. Arov, and M. G. Krein, "Analytic properties of
+     Schmidt pairs for a Hankel operator and the generalized
+     Schur-Takagi problem," Math. USSR-Sbornik, vol. 15, no. 1,
+     pp. 31-73, 1971.
+[17] K. Glover, "All optimal Hankel-norm approximations of linear
+     multivariable systems and their L-infinity-error bounds," Int. J.
+     Control, vol. 39, no. 6, pp. 1115-1193, 1984.
+[18] N. Alon, I. Benjamini, E. Lubetzky, and S. Sodin, "Non-backtracking
+     random walks mix faster," Commun. Contemp. Math., vol. 9, no. 4,
+     pp. 585-603, 2007.
+[19] S. Jelassi, D. Brandfonbrener, S. M. Kakade, and E. Malach, "Repeat
+     after me: Transformers are better than state space models at
+     copying," in Proc. Int. Conf. Mach. Learn. (ICML), 2024.
