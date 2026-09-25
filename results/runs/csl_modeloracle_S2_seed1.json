@@ -1,0 +1,1 @@
+{"exp": "csl", "model": "oracle", "S": 2, "seed": 1, "T": 256, "n_train_walks": 20000, "eval_per_class": 100, "eval_walks": 16, "threads": 1, "acc": 0.1, "per_class_acc": [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], "seconds": 0.0}

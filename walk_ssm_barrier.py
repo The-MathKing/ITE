@@ -596,7 +596,7 @@ def fig_delay(res, out):
         ax.axvline(k, color=colors[i % 4], ls=":", lw=0.8)
     ax.set_xlabel("Real state dimension $S$")
     ax.set_ylabel(r"$\|h-\delta_k\|_2$ (best fit)")
-    ax.legend(ncol=len(ks), loc="lower left", columnspacing=0.8)
+    ax.legend(ncol=len(ks), loc="lower center", bbox_to_anchor=(0.5, 1.0), columnspacing=0.8)
     fig.savefig(out)
     plt.close(fig)
 
@@ -620,7 +620,7 @@ def fig_phase(res, out):
         for i in range(len(Ss)):
             for j in range(len(ks)):
                 if not np.isnan(Z[i, j]):
-                    ax.text(j, i, f"{Z[i, j]:.2f}"[1:], ha="center", va="center", fontsize=5,
+                    ax.text(j, i, f"{Z[i, j]:.2f}".lstrip("0"), ha="center", va="center", fontsize=5,
                             color="white" if Z[i, j] > 0.8 else "#0b0b0b")
         # staircase: first S row with S >= k in each column
         xs, ys = [], []
@@ -689,7 +689,7 @@ def fig_csl_acc(res, out):
                 label=st["label"])
         ax.fill_between(Ss, 100 * (mu - sd), 100 * (mu + sd), color=st["color"], alpha=0.18, lw=0)
     ax.axhline(10, color="#52514e", ls="--", lw=0.8)
-    ax.text(ax.get_xlim()[0] + 0.3, 11, "1-WL / MPNN (chance)", ha="left", va="bottom",
+    ax.text(ax.get_xlim()[1] - 0.5, 11, "1-WL / MPNN (chance)", ha="right", va="bottom",
             fontsize=6, color="#52514e")
     ax.set_xlabel("Real state dimension $S$")
     ax.set_ylabel("CSL test accuracy (%)")
@@ -727,11 +727,6 @@ def fig_csl_threshold(rows, out):
         y = np.array([r["onset_S"] for r in rr if r["onset_S"]], float)
         ax.scatter(x + off, y, s=14, color=st["color"], marker=st["marker"], label=st["label"],
                    edgecolors="white", linewidths=0.4, zorder=3)
-        if model != "oracle" and len(x):
-            c = float((x * y).sum() / (x * x).sum())          # LS slope through origin
-            ax.plot(xg, c * xg, color=st["color"], lw=0.8, ls="-.")
-            ax.text(xg[-1], min(c * xg[-1], ymax * 0.97), f"{c:.1f}$\\times$", color=st["color"],
-                    fontsize=6, ha="right", va="top")
         miss = [r["predicted_S"] + off for r in rr if not r["onset_S"]]
         if miss:
             ax.scatter(miss, [ymax * 0.97] * len(miss), s=14, marker="v", facecolors="none",

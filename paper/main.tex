@@ -49,13 +49,13 @@ $S$ while its target has $k$ unit singular values, so the probe error has
 $\mathcal{H}_\infty$ norm at least one and mean-squared error at least
 $1/k$; the bound is tight at $S=k$. On circular skip-link (CSL) graphs, where
 1-WL message passing is at chance, we compute exactly the non-backtracking
-return horizon $W^*(s)$ that separates each class, and an exact-count
-estimator with window $S$ recognises every class precisely at $S=W^*(s)$.
-Trained diagonal SSMs obey the barrier but pay a large optimisation
-overhead: token-level lag detection requires a median of
-$\phaseRatioLTI\times$ the Hankel minimum, input-dependent (selective)
-dynamics do not escape it, and on CSL the best trained model reaches
-\cslLTIBest\% against \cslOrBest\% for the oracle.
+return horizon $W^*(s)$ that separates each class; an exact-count estimator
+with window $S$ recognises every one of the ten classes at the first
+tested $S\ge W^*(s)$. A direct fit attains the bound at $S=k$, but
+end-to-end trained diagonal SSMs need a median of $\phaseRatioLTI\times$ the
+Hankel minimum for reliable token-level lag detection, input-dependent
+(selective) dynamics do not reduce this, and on CSL the best trained model
+reaches \cslLTIBest\% against \cslOrBest\% for the oracle.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -160,9 +160,11 @@ so the error is $\rho^{2k}/(1-\rho^{2k})\to0$ as $\rho\to0$.
 
 \begin{remark}
 The tight construction needs gains of order $\rho^{-k}$, i.e.\ the
-near-optimal LTI probe is exponentially ill-conditioned in $k$. This
-predicts that gradient-trained SSMs operating near $S=k$ will fall short of
-the bound, which is exactly what we observe in Section~\ref{sec:exp}.
+near-optimal LTI probe is exponentially ill-conditioned in $k$. The bound
+also limits \emph{precision}, not information: for $S<k$ a probe can still
+be partially correlated with the lag-$k$ token (MSE $\ge1/k<1$), so
+statistics pooled over long walks can remain informative below the
+threshold.
 Selective SSMs break the factorisation $h_{i+j+1}=(c^\top A^i)(A^{j+1}B)$,
 so Theorem~\ref{thm:hankel} does not apply to them; we test them empirically.
 \end{remark}
@@ -200,8 +202,9 @@ diagonal LTI system to the pure delay $\delta_{m,k}$ ($m\ge1$) by gradient
 descent, keeping the best of four restarts (Fig.~\ref{fig:delay}). Below the
 bound ($S<k$), the median relative $\ell_2$ error is \delayErrBelow{} (the
 minimum is \delayErrMinBelow{}). Above it, the median is \delayErrAbove.
-Reaching an error of $0.1$ takes a median of $\delayOverhead\,k$ states,
-a first sign of the conditioning overhead predicted by the Remark.
+An error of $0.1$ is first reached at a median of $\delayOverhead\,k$
+states, so the Hankel bound is attained in practice when the delay is
+fitted directly.
 
 \begin{figure}[!t]
 \centering
@@ -219,10 +222,15 @@ lag-$k$ revisit label. Below the bound ($S<k$), the mean AUROC is
 $S\ge4k$ it is \phaseAucAboveLTI{} and \phaseAucAboveSel. Where an
 AUROC of $0.95$ is reached, it takes a median of $\phaseRatioLTI\times$
 (LTI) and $\phaseRatioSel\times$ (selective) the Hankel minimum $S=k$.
-Selectivity changes AUROC by \phaseSelMinusLTI{} on average (mean absolute
-difference \phaseSelMinusLTIabs). Input-dependent dynamics therefore do
-not escape the memory requirement, which is consistent with a barrier that is
-information-theoretic rather than an artefact of time invariance.
+This holds for all \phaseNkLTI{} lags up to $k=\phaseMaxKLTI$, so the
+requirement grows linearly in $k$ as Theorem~\ref{thm:hankel} predicts, but
+with a constant roughly four times larger than in the direct fit of
+Fig.~\ref{fig:delay}. The overhead is thus a property of end-to-end
+training through the readout rather than of realisability. Below the
+bound, AUROC stays above $0.5$, which reflects the partial correlation
+allowed by the Remark. Selectivity changes AUROC by \phaseSelMinusLTI{} on
+average (mean absolute difference \phaseSelMinusLTIabs), so input-dependent
+dynamics do not escape the memory requirement.
 
 \begin{figure*}[!t]
 \centering
@@ -240,17 +248,20 @@ reference we use an \emph{oracle} that applies multinomial logistic
 regression to the exact revisit frequencies at lags $1,\dots,S$. This is
 the best a window-$S$ reader can do. Figs.~\ref{fig:csl} and~\ref{fig:thr}
 and Table~\ref{tab:csl} summarise three seeds. The oracle reaches
-\cslOrBest\% and exceeds 95\% from $S=\cslOrOnsetS$. Its per-class onset
-equals the predicted $W^*(s)$ for \cslExactOr{} of 10 classes, which confirms
-the horizon analysis. The deviations are classes identified by elimination
-before their own horizon. Trained walk-SSMs rise above the 10\% 1-WL
-level but remain well below the oracle: the best LTI model reaches
+\cslOrBest\% and exceeds 95\% from $S=\cslOrOnsetS$. For all
+\cslGridOr{} classes, its onset is exactly the first tested $S\ge W^*(s)$
+(the grid contains even $S$ only), which confirms the horizon analysis.
+Trained walk-SSMs rise well above the 10\% 1-WL level but remain far below
+the oracle: the best LTI model reaches
 \cslLTIBest$\pm$\cslLTIBestStd\% at $S=\cslLTIBestS$, and the best selective
 model reaches \cslSelBest$\pm$\cslSelBestStd\% at $S=\cslSelBestS$. Only
 \cslClassesLTI{} (LTI) and \cslClassesSel{} (selective) classes reach 80\%
-accuracy at any $S\le\cslSmax$. On graphs, therefore, the binding
+accuracy at any $S\le\cslSmax$. One of them ($s=2$) does so below its
+horizon, which is possible because pooling $16\times256$ tokens amplifies
+the partial correlation left by the Remark. On graphs, therefore, the binding
 constraint in practice is not the Hankel capacity but the optimisation of
-the precise, ill-conditioned delays that Theorem~\ref{thm:hankel} requires.
+the precise, ill-conditioned delays that Theorem~\ref{thm:hankel} requires
+for every class-specific lag simultaneously.
 
 \begin{figure}[!t]
 \centering
@@ -264,8 +275,8 @@ three seeds). The oracle uses exact revisit counts at lags $\le S$.}
 \centering
 \includegraphics[width=\columnwidth]{fig4_csl_threshold.pdf}
 \caption{Per-class onset (smallest $S$ with class accuracy $\ge80\%$)
-against the predicted horizon $W^*(s)$. Dash-dotted lines: least-squares
-slopes. Hollow triangles: classes never reaching 80\%.}
+against the predicted horizon $W^*(s)$. Hollow triangles: classes never
+reaching 80\% for $S\le\cslSmax$.}
 \label{fig:thr}
 \end{figure}
 
@@ -283,10 +294,12 @@ cycle of length $k$ costs at least $k$ real state dimensions. This is a
 Hankel-rank fact with a tight $\mathcal{H}_\infty$ and mean-squared form.
 Combined with exact non-backtracking return horizons, it predicts the
 state size at which each CSL class becomes separable, and an exact-count
-oracle confirms the prediction. Trained diagonal SSMs, with or without
-selectivity, obey the barrier and need several times the minimal state.
-This points to the conditioning of delay realisation, rather than capacity
-alone, as the practical bottleneck. Natural extensions are
+oracle confirms the prediction for all ten classes. Direct fits attain
+the bound, but end-to-end trained diagonal SSMs, with or without
+selectivity, need about four times the minimal state for token-level
+detection and stay far from the oracle on CSL. This points to the
+optimisation of precise delays, rather than capacity alone, as the
+practical bottleneck. Natural extensions are
 lower bounds for selective SSMs and better-conditioned delay
 parameterisations for graph SSMs.
 

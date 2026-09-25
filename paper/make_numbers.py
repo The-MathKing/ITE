@@ -80,6 +80,10 @@ for tag, model in (("LTI", "lti"), ("Sel", "selective"), ("Or", "oracle")):
     rr = [o for o in ons if o["model"] == model]
     M[f"cslClasses{tag}"] = str(sum(o["onset_S"] is not None for o in rr))
     M[f"cslExact{tag}"] = str(sum(o["onset_S"] == o["predicted_S"] for o in rr))
+    grid_up = lambda w: min((S for S in Ss if S >= w), default=None)
+    M[f"cslGrid{tag}"] = str(sum(o["onset_S"] == grid_up(o["predicted_S"]) for o in rr))
+    M[f"cslBelow{tag}"] = str(sum(o["onset_S"] is not None and o["onset_S"] < o["predicted_S"]
+                                  for o in rr))
     x = np.array([o["predicted_S"] for o in rr if o["onset_S"]], float)
     y = np.array([o["onset_S"] for o in rr if o["onset_S"]], float)
     M[f"cslSlope{tag}"] = f"{(x * y).sum() / (x * x).sum():.1f}" if len(x) else "--"

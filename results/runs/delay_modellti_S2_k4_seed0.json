@@ -1,1 +1,1 @@
-{"exp": "delay", "model": "lti", "S": 2, "k": 4, "seed": 0, "J": 64, "steps": 3000, "restarts": 4, "lr": 0.02, "threads": 1, "rel_l2_error": 0.8770818127387149}
+{"exp": "delay", "model": "lti", "S": 2, "k": 4, "seed": 0, "J": 64, "steps": 3000, "restarts": 4, "lr": 0.02, "threads": 1, "rel_l2_error": 0.8361928674542859}

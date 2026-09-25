@@ -35,8 +35,27 @@ The figures are sized for IEEE layouts: 3.5 in for a single column,
 embedded TrueType fonts, and the PDFs are saved at 600 dpi with tight
 bounding boxes.
 
-## What to send back for Phase 3
+## Results files
 
 * `results/summary.json`: all metrics, horizons and onsets
 * `results/*.csv`
 * the four PDFs, or just confirm they rendered
+
+## Manuscript (IEEE Signal Processing Letters)
+
+`paper/main.tex` (IEEEtran `journal`), `paper/refs.bib`. All numbers and
+Table I come from `results/summary.json` via `paper/make_numbers.py`, and
+figures are read from `../figures/`.
+
+```bash
+python walk_ssm_barrier.py --plots-only   # (re)draw figures from results/
+cd paper
+python make_numbers.py                    # -> numbers.tex, table_csl.tex
+pdflatex -interaction=nonstopmode main
+bibtex main
+pdflatex -interaction=nonstopmode main
+pdflatex -interaction=nonstopmode main    # -> main.pdf (4 pages)
+```
+
+Before submitting: fill in the author, affiliation and footnote
+placeholders, and check the `refs.bib` fields against the publishers.
