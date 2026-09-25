@@ -70,3 +70,17 @@ python make_txt.py                        # -> manuscript.txt (plain text)
 ```
 
 The review that motivated the current version is in `review/`.
+
+## Submitting to IEEE SPL
+
+EDICS (SPS Unified EDICS, April 2026 list):
+
+| role | code | title |
+|------|------|-------|
+| primary | `TM-DSP-SMOD` | Signal and system modeling |
+| secondary | `TM-SSP-DETC` | Detection and classification |
+| secondary | `ML-CON-PERF` | Performance analysis and bounds |
+| secondary | `ML-DLR-GNN` | Graph neural networks |
+
+AI use is disclosed in the Acknowledgment section, as IEEE policy requires
+for AI-generated text, figures and code.
