@@ -1,0 +1,1 @@
+{"exp": "phase", "model": "selective", "selective": true, "S": 12, "k": 6, "seed": 0, "n": 24, "T": 64, "d_feat": 8, "d_hidden": 128, "batch": 64, "steps": 2000, "lr": 0.003, "eval_batches": 32, "n_train_graphs": 256, "n_test_graphs": 64, "threads": 1, "auroc": 0.8369316209616077, "bal_acc": 0.7587839436010044, "pos_rate": 0.04317079856991768, "seconds": 70.16325545310974}

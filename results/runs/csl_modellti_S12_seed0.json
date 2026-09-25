@@ -1,0 +1,1 @@
+{"exp": "csl", "model": "lti", "selective": false, "S": 12, "seed": 0, "T": 128, "eval_T": 256, "d_feat": 8, "d_hidden": 128, "batch": 64, "steps": 3000, "lr": 0.003, "eval_per_class": 100, "eval_walks": 16, "threads": 1, "acc": 0.298, "per_class_acc": [1.0, 0.99, 0.06, 0.29, 0.0, 0.07, 0.0, 0.03, 0.54, 0.0], "seconds": 191.16207766532898}
