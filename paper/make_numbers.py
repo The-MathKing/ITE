@@ -50,10 +50,10 @@ M["belowN"] = str(ps["lti_below_cells"])
 M["belowUnderLTI"] = str(ps["lti_below_cells_under_surrogate"])
 M["belowUnderSel"] = str(ps["selective_below_cells_under_surrogate"])
 M["leakLo"], M["leakHi"] = f2(leak["min"]), f2(leak["max"])
-M["selDiff"] = f"{ps['sel_minus_lti_mean']:+.3f}"
+M["selDiff"] = f"${ps['sel_minus_lti_mean']:+.3f}$"
 M["selCI"] = f"{ps['sel_minus_lti_ci95']:.3f}"
 p = ps["sel_minus_lti_wilcoxon_p"]
-M["selP"] = f"{p:.2f}" if p >= 0.01 else f"{p:.1e}"
+M["selP"] = f"{p:.2f}" if p >= 0.01 else (f"{p:.3f}" if p >= 0.001 else "<0.001")
 M["dtCV"] = f"{100 * ps['dt_cv_median']:.0f}"
 
 
@@ -71,6 +71,12 @@ M["ltiAtK"] = mean_over_k(ps["lti_cells"], lambda k: k)
 M["ltiAtTwoK"] = mean_over_k(ps["lti_cells"], lambda k: 2 * k)
 M["ltiEightThirtyTwo"] = f2(ps["lti_cells"]["k8_S32"][0])
 M["nocmpEightThirtyTwo"] = f2(ps["lti_nocmp"]["k8_S32"][0])
+M["nocmpMaxDiff"] = f2(max(abs(ps["lti_nocmp"][c][0] - ps["lti_cells"][c][0]) for c in ps["lti_nocmp"]))
+fz = [ps["frozen"][f"k{k}_S{k}"][0] for k in (4, 8, 12)]
+M["frozenKlo"], M["frozenKhi"] = f2(min(fz)), f2(max(fz))
+M["frozenSixteen"], M["frozenSixteenCI"] = f2(ps["frozen"]["k16_S16"][0]), f2(ps["frozen"]["k16_S16"][1])
+sk = [ps["shift"][f"k{k}_S{k}"][0] for k in (4, 8, 12, 16)]
+M["shiftAtKlo"], M["shiftAtKhi"] = f2(min(sk)), f2(max(sk))
 
 # ---- CSL ----------------------------------------------------------------------
 cs = summary["csl_stats"]
@@ -86,10 +92,10 @@ if aux:
     Sa = max(aux, key=lambda S: aux[S][0])
     M["cslAuxBest"], M["cslAuxBestCI"], M["cslAuxBestS"] = pct(aux[Sa][0]), pct(aux[Sa][1]), str(Sa)
     M["cslLTIatAuxS"] = pct(acc[f"lti_S{Sa}"][0])
-M["cslSelMinusLTI"] = f"{100 * cs['sel_minus_lti_mean']:+.1f}"
+M["cslSelMinusLTI"] = f"${100 * cs['sel_minus_lti_mean']:+.1f}$"
 M["cslSelMinusLTICI"] = f"{100 * cs['sel_minus_lti_ci95']:.1f}"
 if "acc_eval256_minus_eval128_mean" in cs:
-    M["cslEvalLenGain"] = f"{100 * cs['acc_eval256_minus_eval128_mean']:+.1f}"
+    M["cslEvalLenGain"] = f"{100 * cs['acc_eval256_minus_eval128_mean']:.1f}"
 pool = cs["pool_class_r2"]
 M["poolTwoOne"], M["poolTwoSixteen"] = pct(pool["S2_w1"]), pct(pool["S2_w16"])
 

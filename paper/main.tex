@@ -51,11 +51,13 @@ unit Hankel singular values, for $S<k$ no linear probe improves on the zero
 probe in Hankel norm, and any probe explains at most a fraction $S/k$ of the
 delayed sample's variance. For Gaussian inputs this bounds every nonlinear
 readout, with detection divergence at most $\tfrac12\ln\frac{k}{k-S}$.
-Optimal fits follow the $S/k$ law, a trained shift register switches on
-exactly at $S=k+1$, and trained diagonal SSMs stay below the Gaussian ceiling
-but need \ratioLTIc$\times$ the minimal state to reach an AUROC of $0.95$. On
-circular skip-link graphs, non-backtracking return horizons predict when
-exact-count features separate classes.
+Optimal fits follow the $S/k$ law, and a trained shift register switches on
+exactly at $S=k+1$. Trained diagonal SSMs stay below the Gaussian ceiling but
+need \ratioLTIc$\times$ the minimal state to reach an AUROC of $0.95$.
+Freezing their poles at the optimal fit raises the AUROC at $S=k$ from
+\ltiAtK{} to \frozenAtK, so most of this overhead lies in learning the
+dynamics. On circular skip-link graphs, non-backtracking return horizons
+predict when exact-count features separate classes.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -263,13 +265,14 @@ approximately linearly in $k$. Its median ratio to $k$ is \ratioLTIa, \ratioLTIb
 \ratioLTIc{} and \ratioLTId{} at AUROC thresholds $0.8$, $0.9$, $0.95$ and
 $0.99$. Below the bound, all \belowN{} LTI cells lie under the optimal AUROC
 of the Gaussian surrogate with explained variance $S/k$ (Fig.~\ref{fig:ratio}).
-The surrogate is justified on these graphs: a Bayes-optimal table of the exact
-revisit indicators at lags $1,\dots,S-1$ predicts lag-$k$ revisits at AUROC
-\leakLo--\leakHi, so short-lag walk structure carries no information about
-lag-$k$ revisits. The input-dependent step changes the AUROC by
-\selDiff$\pm$\selCI{} (mean over cells; Wilcoxon $p=\selP$), and its learned
-$\Delta_t$ varies by only \dtCV\% across tokens. Random features give the
-gate nothing to select on, so this is expected.
+The surrogate is a fair model on these graphs. A Bayes-optimal table of the
+exact revisit indicators between $x_t$ and lags $1,\dots,S-1$ predicts lag-$k$
+revisits at AUROC \leakLo--\leakHi, so this short-lag walk structure carries no
+information about lag-$k$ revisits. The input-dependent step changes the
+AUROC by \selDiff$\pm$\selCI{} (mean over cells; Wilcoxon $p=\selP$). The
+change is consistent but negligible. Its learned $\Delta_t$ varies by only
+\dtCV\% across tokens, which is expected because random features give the gate
+nothing to select on.
 
 \begin{figure*}[!t]
 \centering
@@ -284,21 +287,28 @@ Input-dependent step minus LTI. Red dashed line: $S=k$.}
 \textit{Controls.} Three controls separate the information limit from
 training effects (Fig.~\ref{fig:ratio}).
 \begin{itemize}
-\item \emph{Shift register.} A trained shift register (nilpotent $A$, learned $w$)
-has AUROC \shiftAtK{} at $S=k$ and \shiftAtKp{} at $S=k+1$, the switch predicted
-by Proposition~\ref{prop:exact}(c).
-\item \emph{Frozen poles.} Freezing the poles at the delay fit of
-Fig.~\ref{fig:delay} and training only $B$ and the readout gives \frozenAtK{} at
-$S=k$ and \frozenAtTwoK{} at $S=2k$, against \ltiAtK{} and \ltiAtTwoK{} with
-learned poles.
-\item \emph{Comparison features.} Removing them lowers the $k=8$ AUROC at $S=32$
-from \ltiEightThirtyTwo{} to \nocmpEightThirtyTwo.
+\item \emph{Shift register.} A trained shift register (nilpotent $A$, learned
+$w$, $k\in\{4,8,12,16\}$) has AUROC \shiftAtKlo--\shiftAtKhi{} at $S=k$ and
+\shiftAtKp{} at $S=k+1$. This is the switch predicted by
+Proposition~\ref{prop:exact}(c); the small excess over $0.5$ at $S=k$ comes
+from walk structure among the stored lags.
+\item \emph{Frozen poles.} We freeze the poles at the delay fit of
+Fig.~\ref{fig:delay} and train only $B$ and the readout. The AUROC is
+\frozenAtK{} at $S=k$ and \frozenAtTwoK{} at $S=2k$ (mean over $k$), against
+\ltiAtK{} and \ltiAtTwoK{} with learned poles. For $k\le12$ it is already
+\frozenKlo--\frozenKhi{} at $S=k$. At $k=16$ it drops to
+\frozenSixteen$\pm$\frozenSixteenCI, where the fitted poles are
+ill-conditioned (Remark~1).
+\item \emph{Comparison features.} Removing them changes the $k=8$ AUROC by at
+most \nocmpMaxDiff{} at any $S$.
 \end{itemize}
-\ControlsInterpretation
+The information limit is therefore nearly attainable at $S\approx k$. Most of
+the overhead of trained SSMs comes from learning the dynamics, not from what
+an order-$S$ state can represent or from the readout.
 
 \begin{figure}[!t]
 \centering
-\includegraphics[width=\columnwidth]{fig4_auroc_vs_ratio.pdf}
+\includegraphics[width=\columnwidth]{fig3_auroc_vs_ratio.pdf}
 \caption{Test AUROC against $S/k$ (all $k$, seed means). Solid curve: optimal
 AUROC of the i.i.d.\ Gaussian surrogate with explained variance $S/k$
 (Corollary~\ref{cor:gauss}). Red dashed line: $S=k$.}
@@ -318,13 +328,23 @@ $S\ge W^*(r)$ (Table~\ref{tab:csl}). The trained models reach
 \cslLTIBest$\pm$\cslLTIBestCI\% (LTI) and \cslSelBest$\pm$\cslSelBestCI\%
 (input-dependent step) at $S=\cslSmax$. The largest tested $S$ gives the
 best accuracy for both, and the curves are still rising.
-\CSLInterpretation{} Class $r=2$ ($W^*=3$) is learned at $S=2$ only by
+Neither remedy we tried closes the gap:
+\begin{itemize}
+\item A per-lag revisit loss gives \cslAuxBest$\pm$\cslAuxBestCI\% at
+$S=\cslAuxBestS$.
+\item Evaluating at the training length ($T=128$) instead of $T=256$ lowers
+accuracy by \cslEvalLenGain{} points.
+\end{itemize}
+The input-dependent step is \cslSelMinusLTI$\pm$\cslSelMinusLTICI{} points
+from LTI (paired over $S$ and seeds). By the token-level controls, the
+likely bottleneck is learning precise poles for several class-specific lags
+from a pooled graph label, but we do not isolate it here. Class $r=2$ ($W^*=3$) is learned at $S=2$ only by
 pooling: with one walk its accuracy is \poolTwoOne\%, and with 16 walks it
 is \poolTwoSixteen\%.
 
 \begin{figure}[!t]
 \centering
-\includegraphics[width=\columnwidth]{fig3_csl_accuracy.pdf}
+\includegraphics[width=\columnwidth]{fig4_csl_accuracy.pdf}
 \caption{CSL test accuracy against $S$ (mean and 95\% interval over
 \nSeeds{} seeds; test graphs are the ten CSL graphs with fresh walks and
 features). The exact-count reference uses revisit frequencies at lags

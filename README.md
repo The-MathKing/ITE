@@ -30,8 +30,8 @@ other jobs are using the CPU, reduce `--workers`.
 |----|------|--------|
 | `delay` | gradient fit of an `S`-state diagonal LTI kernel to the delay `z^-k`, against the bound `sqrt(1-S/k)` | `figures/fig1_delay_realization.pdf` |
 | `phase` | token-level lag-`k` revisit detection on non-backtracking walks over random 4-regular graphs, `(S, k)` grid, LTI vs input-dependent step, 3 seeds | `figures/fig2_phase_diagram.pdf` (double column) |
-| `phase` controls | frozen fitted poles, nilpotent shift register, no comparison features | `figures/fig4_auroc_vs_ratio.pdf` |
-| `csl` | 10-class CSL accuracy vs `S`: LTI, input-dependent step, per-lag revisit loss, exact-count reference; pooled-walk curves | `figures/fig3_csl_accuracy.pdf`, Table I |
+| `phase` controls | frozen fitted poles, nilpotent shift register, no comparison features | `figures/fig3_auroc_vs_ratio.pdf` |
+| `csl` | 10-class CSL accuracy vs `S`: LTI, input-dependent step, per-lag revisit loss, exact-count reference; pooled-walk curves | `figures/fig4_csl_accuracy.pdf`, Table I |
 
 `leakage_check.py` tests whether short-lag walk structure predicts lag-`k`
 revisits (it does not: AUROC about 0.5), which supports the i.i.d. Gaussian
@@ -63,6 +63,7 @@ pdflatex -interaction=nonstopmode main
 bibtex main
 pdflatex -interaction=nonstopmode main
 pdflatex -interaction=nonstopmode main    # -> main.pdf (4 pages)
+python make_txt.py                        # -> manuscript.txt (plain text)
 ```
 
 The review that motivated the current version is in `review/`.

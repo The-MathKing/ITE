@@ -1,46 +1,43 @@
 #!/usr/bin/env python3
 """
-Memory Is Expressivity: a state-dimension barrier for walk-based SSMs on graphs.
+Limits on delay detection by low-order state-space models, with application
+to graph random walks (pure PyTorch + NumPy + Matplotlib, CPU-friendly).
 
-Phase 2 experimental rig (pure PyTorch + NumPy + Matplotlib, CPU-friendly).
+Claims under test
+-----------------
+A model with real state s_t in R^S reads tokens x_t and must decide whether
+x_t == x_{t-k}.  On a non-backtracking walk with fresh random node features
+x_t = f_{v_t}, this is the event that the last k steps close a walk.
 
-Claim under test
-----------------
-A walk-based graph model reads a (non-backtracking) random walk v_0, v_1, ...
-with fresh random node features x_t = r_{v_t}.  Detecting a closed walk of
-length k means deciding, at every step t, whether v_t == v_{t-k}.
-
-  * Theorem (LTI barrier).  For an LTI state-space model with real state
-    dimension S, any linear probe z_t = c^T s_t + d x_t of the lag-k token
-    has an error transfer function E with ||E||_inf >= 1 and
-    sum_m m e_m^2 >= 1 whenever S < k: the target impulse delta_{m,k}
-    (m >= 1) has a rank-k Hankel matrix with unit singular values, while an
-    order-S model has Hankel rank <= S (Eckart-Young + Nehari).  The bound
-    is tight: S = k achieves arbitrarily small error.
-  * H1: trained LTI (S4D-style) walk models show a phase transition along
-    S = c k; we report the empirical overhead c >= 1.
-  * H2: input-dependent (selective, Mamba-style) SSMs are not covered by the
-    Hankel argument; we measure whether they empirically escape it.
-  * Graph consequence: on CSL graphs (1-WL fails, 10% accuracy), class s can
-    only be recognised once the model can see closed walks up to the exact
-    "distinguishability horizon" W*(s), computed here from the non-backtracking
-    operator.  Prediction: per-class onset at S ~ W*(s).
+  * Prop. 1.  With LTI dynamics and any readout, exact detection is
+    impossible if S <= k, or if A is invertible (any S).  A nilpotent shift
+    register with S >= k + 1 detects exactly.
+  * Thm. 1.  For S < k, any linear probe of the lag-k token has
+    ||H_k(e)||_2 >= 1 (no better than the zero probe) and
+    ||H_k(e)||_F^2 >= k - S, so it explains at most S/k of the variance.
+  * Cor. 1.  For i.i.d. Gaussian tokens this bounds every readout:
+    MMSE >= d - S/k and KL <= 1/2 ln(k / (k - S)).
+  * Empirics: optimal fits, a shift-register control, frozen fitted poles,
+    and trained LTI / input-dependent-step SSMs; CSL classification against
+    exact non-backtracking return horizons W*(r).
 
 Experiments
 -----------
   delay : gradient fit of a diagonal LTI kernel to the pure delay z^{-k}
   phase : token-level lag-k revisit detection on random 4-regular graphs,
-          (S, k) grid, LTI vs selective               -> phase diagram
-  csl   : 10-class CSL classification vs S, LTI vs selective, several seeds
+          (S, k) grid, LTI vs input-dependent step, plus controls
+          (frozen poles, shift register, no comparison features)
+  csl   : 10-class CSL classification vs S; exact-count reference,
+          per-lag revisit loss, pooled-walk curves
 
 Outputs
 -------
   figures/fig1_delay_realization.pdf
   figures/fig2_phase_diagram.pdf
-  figures/fig3_csl_accuracy.pdf
-  figures/fig4_csl_threshold.pdf
+  figures/fig3_auroc_vs_ratio.pdf
+  figures/fig4_csl_accuracy.pdf
   results/runs/*.json        (one file per training run; reruns resume)
-  results/summary.json       (everything needed for Phase 3)
+  results/summary.json       (all metrics and statistics for the paper)
   results/*.csv              (tables)
 
 Usage
@@ -178,10 +175,10 @@ def inv_softplus(x):
 
 
 class WalkSSM(nn.Module):
-    """Single diagonal complex SSM layer + pointwise MLP readout.
+    """Single SSM layer + pointwise MLP readout.
 
-    Real state dimension S = 2M (M complex modes; real and imaginary parts
-    are both fed to the readout).  The readout sees the full state and the
+    Real state dimension S: floor(S/2) complex modes (real and imaginary parts
+    are both fed to the readout) plus one real mode if S is odd.  The readout sees the full state and the
     current token, matching the setting of the theorem.
 
       LTI       : a = exp(dt * lam),   dt a learned per-mode constant
@@ -1012,7 +1009,7 @@ def main():
     if results.get("phase"):
         ph = results["phase"]
         fig_phase(ph, os.path.join(fig_dir, "fig2_phase_diagram.pdf"))
-        fig_ratio(ph, os.path.join(fig_dir, "fig4_auroc_vs_ratio.pdf"))
+        fig_ratio(ph, os.path.join(fig_dir, "fig3_auroc_vs_ratio.pdf"))
         cols = ["model", "k", "S", "seed", "auroc", "bal_acc", "pos_rate", "dt_cv", "seconds"]
         write_csv(os.path.join(res_dir, "phase.csv"), ph, cols)
         summary["phase"] = [{k: r.get(k) for k in cols} for r in ph]
@@ -1022,7 +1019,7 @@ def main():
         summary["phase_stats"] = phase_stats(ph)
     if results.get("csl"):
         cs = results["csl"]
-        fig_csl_acc(cs, os.path.join(fig_dir, "fig3_csl_accuracy.pdf"))
+        fig_csl_acc(cs, os.path.join(fig_dir, "fig4_csl_accuracy.pdf"))
         rows = csl_onsets(cs, horizons)
         write_csv(os.path.join(res_dir, "csl_onsets.csv"), rows,
                   ["model", "skip", "horizon", "onset_S"])
