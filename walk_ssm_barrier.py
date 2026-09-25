@@ -10,19 +10,21 @@ A walk-based graph model reads a (non-backtracking) random walk v_0, v_1, ...
 with fresh random node features x_t = r_{v_t}.  Detecting a closed walk of
 length k means deciding, at every step t, whether v_t == v_{t-k}.
 
-  * Theorem (LTI barrier).  If the sequence model is a linear time-invariant
-    state-space model with real state dimension S followed by any pointwise
-    readout g(s_t, x_t), exact lag-k revisit detection over continuous
-    features requires S >= k + 1: the needed impulse response h_j = delta_{jk}
-    has a Hankel matrix of rank k + 1, and rank(Hankel) <= S.
-  * H1: trained LTI (S4D-style) walk models show a phase transition in
-    accuracy along S ~ k + 1.
-  * H2: input-dependent (selective, Mamba-style) SSMs are not provably covered
-    by the Hankel argument; we measure whether they empirically escape it.
+  * Theorem (LTI barrier).  For an LTI state-space model with real state
+    dimension S, any linear probe z_t = c^T s_t + d x_t of the lag-k token
+    has an error transfer function E with ||E||_inf >= 1 and
+    sum_m m e_m^2 >= 1 whenever S < k: the target impulse delta_{m,k}
+    (m >= 1) has a rank-k Hankel matrix with unit singular values, while an
+    order-S model has Hankel rank <= S (Eckart-Young + Nehari).  The bound
+    is tight: S = k achieves arbitrarily small error.
+  * H1: trained LTI (S4D-style) walk models show a phase transition along
+    S = c k; we report the empirical overhead c >= 1.
+  * H2: input-dependent (selective, Mamba-style) SSMs are not covered by the
+    Hankel argument; we measure whether they empirically escape it.
   * Graph consequence: on CSL graphs (1-WL fails, 10% accuracy), class s can
     only be recognised once the model can see closed walks up to the exact
     "distinguishability horizon" W*(s), computed here from the non-backtracking
-    operator.  Prediction: per-class onset at S ~ W*(s) + 1.
+    operator.  Prediction: per-class onset at S ~ W*(s).
 
 Experiments
 -----------
@@ -288,7 +290,8 @@ def _setup(seed, threads):
 
 
 def job_delay(cfg):
-    """Fit Re(sum_m c_m a_m^j) to delta_{j,k}, j = 0..J-1; best of restarts."""
+    """Fit Re(sum_m c_m a_m^j) to delta_{j,k} for j = 1..J-1 (the j = 0 tap is
+    free, as the readout sees the current token); best of restarts."""
     rng = _setup(cfg["seed"], cfg["threads"])
     k, S, J = cfg["k"], cfg["S"], cfg["J"]
     M = S // 2
@@ -307,7 +310,7 @@ def job_delay(cfg):
             mag = torch.sigmoid(rho)[:, None] ** j[None]      # (M, J)
             ang = th[:, None] * j[None]
             h = (c[:, :1] * mag * torch.cos(ang) - c[:, 1:] * mag * torch.sin(ang)).sum(0)
-            loss = ((h - target) ** 2).sum()
+            loss = ((h[1:] - target[1:]) ** 2).sum()
             opt.zero_grad()
             loss.backward()
             opt.step()
@@ -419,10 +422,10 @@ def job_csl(cfg):
 
 def job_csl_oracle(cfg):
     """Explicit-window reference (CRaWl-style): multinomial logistic regression
-    on the exact revisit counts at lags 1..W, W = S - 1.  By the theorem this
+    on the exact revisit counts at lags 1..W, W = S.  By the theorem this
     is what an S-state LTI walk model can at best observe."""
     rng = _setup(cfg["seed"], cfg["threads"])
-    T, W = cfg["T"], cfg["S"] - 1
+    T, W = cfg["T"], cfg["S"]
     pool = np.stack([csl_graph(s) for s in CSL_SKIPS])
     C = len(CSL_SKIPS)
 
@@ -535,7 +538,7 @@ def make_configs(args):
                     batch=64, steps=200 if q else 3000, lr=3e-3,
                     eval_per_class=20 if q else 100, eval_walks=2 if q else 16,
                     threads=th))
-    for S in Ss_csl:                           # explicit-window reference, W = S - 1
+    for S in Ss_csl:                           # explicit-window reference, W = S
         for seed in range(1 if q else args.csl_seeds):
             cfgs["csl"].append(dict(
                 exp="csl", model="oracle", S=S, seed=seed, T=64 if q else 256,
@@ -554,7 +557,7 @@ BLUE, ORANGE, AQUA, YELLOW = "#2a78d6", "#eb6834", "#1baf7a", "#eda100"
 MODEL_STYLE = {"lti": dict(color=BLUE, marker="o", label="LTI (S4D-type)"),
                "selective": dict(color=ORANGE, marker="s", label="Selective (Mamba-type)"),
                "oracle": dict(color="#52514e", marker="^", ls="--",
-                              label="Exact counts, lags $\\leq S-1$")}
+                              label="Exact counts, lags $\\leq S$")}
 
 
 def ieee_style():
@@ -590,11 +593,10 @@ def fig_delay(res, out):
         rr = sorted((r for r in res if r["k"] == k), key=lambda r: r["S"])
         ax.semilogy([r["S"] for r in rr], [max(r["rel_l2_error"], 1e-6) for r in rr],
                     color=colors[i % 4], marker=markers[i % 4], label=f"$k={k}$")
-        ax.axvline(k + 1, color=colors[i % 4], ls=":", lw=0.8)
+        ax.axvline(k, color=colors[i % 4], ls=":", lw=0.8)
     ax.set_xlabel("Real state dimension $S$")
     ax.set_ylabel(r"$\|h-\delta_k\|_2$ (best fit)")
     ax.legend(ncol=len(ks), loc="lower left", columnspacing=0.8)
-    ax.set_title("Dotted: theoretical threshold $S=k+1$", fontsize=7)
     fig.savefig(out)
     plt.close(fig)
 
@@ -620,13 +622,13 @@ def fig_phase(res, out):
                 if not np.isnan(Z[i, j]):
                     ax.text(j, i, f"{Z[i, j]:.2f}"[1:], ha="center", va="center", fontsize=5,
                             color="white" if Z[i, j] > 0.8 else "#0b0b0b")
-        # staircase: first S row with S >= k + 1 in each column
+        # staircase: first S row with S >= k in each column
         xs, ys = [], []
         for j, k in enumerate(ks):
-            i0 = next((i for i, S in enumerate(Ss) if S >= k + 1), len(Ss))
+            i0 = next((i for i, S in enumerate(Ss) if S >= k), len(Ss))
             xs += [j - 0.5, j + 0.5]
             ys += [i0 - 0.5, i0 - 0.5]
-        ax.plot(xs, ys, color="#e34948", lw=1.4, ls="--", label="$S=k+1$ (Hankel bound)")
+        ax.plot(xs, ys, color="#e34948", lw=1.4, ls="--", label="$S=k$ (Hankel bound)")
         xe, ye = [], []
         for j in range(len(ks)):
             i0 = next((i for i in range(len(Ss)) if Z[i, j] >= PHASE_THR), len(Ss))
@@ -658,8 +660,8 @@ def phase_thresholds(res, thr=PHASE_THR):
                 if r["model"] == model and r["k"] == k:
                     by_S.setdefault(r["S"], []).append(r["auroc"])
             S_emp = next((S for S in sorted(by_S) if np.mean(by_S[S]) >= thr), None)
-            rows.append(dict(model=model, k=k, hankel_S=k + 1, empirical_S=S_emp,
-                             ratio=None if S_emp is None else S_emp / (k + 1)))
+            rows.append(dict(model=model, k=k, hankel_S=k, empirical_S=S_emp,
+                             ratio=None if S_emp is None else S_emp / k))
     return rows
 
 
@@ -705,7 +707,7 @@ def csl_onsets(res, horizons, thr=0.8):
         for c, s in enumerate(CSL_SKIPS):
             onset = next((S for S in Ss if tab[(model, S)]["per_class"][c] >= thr), None)
             rows.append(dict(model=model, skip=s, horizon=horizons[s],
-                             predicted_S=None if horizons[s] is None else horizons[s] + 1,
+                             predicted_S=horizons[s],
                              onset_S=onset))
     return rows
 
@@ -717,7 +719,7 @@ def fig_csl_threshold(rows, out):
     ys_all = [r["onset_S"] for r in rows if r["onset_S"]]
     ymax = max(ys_all + [10]) * 1.15
     xg = np.linspace(0, max(xs_all) + 1, 50)
-    ax.plot(xg, xg, color="#52514e", ls="--", lw=0.8, label="onset $=W^*+1$ (bound)")
+    ax.plot(xg, xg, color="#52514e", ls="--", lw=0.8, label="onset $=W^*$ (bound)")
     for off, model in ((-0.2, "lti"), (0.0, "oracle"), (0.2, "selective")):
         st = MODEL_STYLE[model]
         rr = [r for r in rows if r["model"] == model and r["predicted_S"]]
@@ -736,7 +738,7 @@ def fig_csl_threshold(rows, out):
                        edgecolors=st["color"], linewidths=0.8, zorder=3)
     ax.set_xlim(0, max(xs_all) + 1)
     ax.set_ylim(0, ymax)
-    ax.set_xlabel(r"Predicted minimal state $W^*(s)+1$")
+    ax.set_xlabel(r"Predicted minimal state $W^*(s)$")
     ax.set_ylabel("Observed onset $S$ (class acc $\\geq$ 80%)")
     ax.legend(loc="lower center", bbox_to_anchor=(0.5, 1.0), ncol=2, fontsize=6)
     fig.savefig(out)

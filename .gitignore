@@ -2,3 +2,10 @@ __pycache__/
 *.pyc
 results_quick/
 figures_quick/
+paper/*.aux
+paper/*.log
+paper/*.blg
+paper/*.bbl
+paper/*.out
+paper/main.pdf
+run_full.log

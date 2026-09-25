@@ -27,8 +27,8 @@ other jobs are using the CPU, reduce `--workers`.
 |----|------|--------|
 | `delay` | gradient fit of a diagonal LTI kernel to the pure delay `z^-k` vs `S` | `figures/fig1_delay_realization.pdf` |
 | `phase` | token-level lag-`k` revisit detection on non-backtracking walks over random 4-regular graphs, `(S, k)` grid, LTI vs selective | `figures/fig2_phase_diagram.pdf` (double column) |
-| `csl` | 10-class CSL (1-WL: 10 %), accuracy vs `S`; LTI, selective, and an exact-count oracle with window `S-1` | `figures/fig3_csl_accuracy.pdf` |
-| `csl` | per-class onset `S` vs predicted `W*(s)+1` from the exact NB-return horizon | `figures/fig4_csl_threshold.pdf` |
+| `csl` | 10-class CSL (1-WL: 10 %), accuracy vs `S`; LTI, selective, and an exact-count oracle with window `S` | `figures/fig3_csl_accuracy.pdf` |
+| `csl` | per-class onset `S` vs predicted `W*(s)` from the exact NB-return horizon | `figures/fig4_csl_threshold.pdf` |
 
 The figures are sized for IEEE layouts: 3.5 in for a single column,
 7.16 in for the full text width. Text is set in 8 pt serif with
