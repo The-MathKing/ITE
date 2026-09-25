@@ -190,9 +190,13 @@ class WalkSSM(nn.Module):
     """
 
     def __init__(self, d_in, S, selective, d_hidden=128, n_out=1, pool=False, d_cmp=16,
-                 aux=False):
+                 aux=False, kind="diag", poles=None, use_cmp=True):
         super().__init__()
         assert S >= 1
+        # kind: "diag"   learned diagonal complex SSM (LTI or selective)
+        #       "frozen" diagonal SSM with poles fixed to `poles` [(|a|, arg a)]
+        #       "shift"  nilpotent shift register s_t = (b^T x_t, ..., b^T x_{t-S+1})
+        self.kind, self.use_cmp, self.S = kind, use_cmp, S
         # M complex modes (2 real dims each) + one real mode if S is odd
         M, R = S // 2, S % 2
         self.Mc, self.M = M, M + R
@@ -215,11 +219,17 @@ class WalkSSM(nn.Module):
             self.log_dt = nn.Parameter(torch.log(dt0))
         self.B_re = nn.Parameter(torch.randn(M, d_in) / math.sqrt(d_in))
         self.B_im = nn.Parameter(torch.randn(M, d_in) / math.sqrt(d_in))
+        if kind == "frozen":
+            assert R == 0 and len(poles) == M
+            pa = torch.tensor(poles, dtype=torch.float32)
+            self.register_buffer("a_fixed", torch.polar(pa[:, 0], pa[:, 1]))
+        if kind == "shift":
+            self.b_shift = nn.Parameter(torch.randn(d_in) / math.sqrt(d_in))
         # comparison features (q(x_t) - k(s_t))^2: lets the readout test token
         # equality easily; still a pointwise function g(s_t, x_t)
         self.q = nn.Linear(d_in, d_cmp)
         self.k = nn.Linear(S, d_cmp)
-        f = S + d_in + d_cmp
+        f = S + d_in + (d_cmp if use_cmp else 0)
         self.mlp = nn.Sequential(
             nn.LayerNorm(f), nn.Linear(f, d_hidden), nn.GELU(),
             nn.Linear(d_hidden, d_hidden), nn.GELU())
@@ -227,26 +237,39 @@ class WalkSSM(nn.Module):
         # optional per-token self-supervised head (graph-agnostic revisit label)
         self.aux_head = nn.Linear(d_hidden, aux) if aux else None
 
-    def forward(self, x):                                    # x: (B, T, d)
+    def states(self, x):
+        """Real state sequence (B, T, S)."""
         Bsz, T, _ = x.shape
+        if self.kind == "shift":
+            u = F.pad(x @ self.b_shift, (self.S - 1, 0))      # (B, T + S - 1)
+            return u.unfold(1, self.S, 1).flip(-1)            # lags 0..S-1
         lam = torch.complex(-torch.exp(self.log_neg_re), self.im * self.im_mask)
         Bc = torch.complex(self.B_re, self.B_im * self.im_mask[:, None])
         u = torch.complex(x, torch.zeros_like(x)) @ Bc.T      # (B, T, M)
-        if self.selective:
-            dt = F.softplus(self.dt_proj(x))                 # (B, T, M)
+        if self.kind == "frozen":
+            a = self.a_fixed.expand(Bsz, T, self.M)
+            b = u
         else:
-            dt = torch.exp(self.log_dt).expand(Bsz, T, self.M)
-        a = torch.exp(dt * lam)
-        b = dt * u
+            if self.selective:
+                dt = F.softplus(self.dt_proj(x))             # (B, T, M)
+            else:
+                dt = torch.exp(self.log_dt).expand(Bsz, T, self.M)
+            a = torch.exp(dt * lam)
+            b = dt * u
         h = torch.zeros(Bsz, self.M, dtype=b.dtype)
         hs = []
         for t in range(T):
             h = a[:, t] * h + b[:, t]
             hs.append(h)
         H = torch.stack(hs, 1)
-        Hr = torch.cat([H.real, H.imag[..., :self.Mc]], -1)
-        cmp = (self.q(x) - self.k(Hr)) ** 2
-        z = self.mlp(torch.cat([Hr, x, cmp], -1))
+        return torch.cat([H.real, H.imag[..., :self.Mc]], -1)
+
+    def forward(self, x):                                    # x: (B, T, d)
+        Hr = self.states(x)
+        feats = [Hr, x]
+        if self.use_cmp:
+            feats.append((self.q(x) - self.k(Hr)) ** 2)
+        z = self.mlp(torch.cat(feats, -1))
         if not self.pool:
             return self.head(z)
         out = self.head(z.mean(1))
@@ -298,7 +321,7 @@ def job_delay(cfg):
     target = torch.zeros(J)
     target[k] = 1.0
     j = torch.arange(J, dtype=torch.float32)
-    best = float("inf")
+    best, best_poles = float("inf"), None
     for r in range(cfg["restarts"]):
         torch.manual_seed(cfg["seed"] * 100 + r)
         rho = nn.Parameter(torch.randn(M) * 0.5 + 1.0)
@@ -314,8 +337,11 @@ def job_delay(cfg):
             opt.zero_grad()
             loss.backward()
             opt.step()
-        best = min(best, math.sqrt(loss.item()))
-    return {**cfg, "rel_l2_error": best}
+        if math.sqrt(loss.item()) < best:
+            best = math.sqrt(loss.item())
+            best_poles = [[float(m), float(t)] for m, t in
+                          zip(torch.sigmoid(rho).detach(), th.detach())]
+    return {**cfg, "rel_l2_error": best, "poles": best_poles}
 
 
 def job_phase(cfg):
@@ -324,7 +350,12 @@ def job_phase(cfg):
     g_rng = np.random.default_rng(12345)          # same graph pools for every run
     train_pool = np.stack([random_4regular(n, g_rng) for _ in range(cfg["n_train_graphs"])])
     test_pool = np.stack([random_4regular(n, g_rng) for _ in range(cfg["n_test_graphs"])])
-    model = WalkSSM(df, cfg["S"], cfg["selective"], d_hidden=cfg["d_hidden"])
+    poles = None
+    if cfg.get("kind") == "frozen":
+        with open(cfg["poles_from"]) as fh:
+            poles = json.load(fh)["poles"]
+    model = WalkSSM(df, cfg["S"], cfg["selective"], d_hidden=cfg["d_hidden"],
+                    kind=cfg.get("kind", "diag"), poles=poles, use_cmp=cfg.get("use_cmp", True))
     opt = torch.optim.AdamW(model.parameters(), lr=cfg["lr"], weight_decay=0.01)
 
     def batch(pool, B, r):
@@ -354,11 +385,16 @@ def job_phase(cfg):
             X, Y = batch(test_pool, cfg["batch"], ev)
             S_.append(model(X)[:, k:, 0].flatten().numpy())
             L_.append(Y.flatten().numpy())
+        extra = {}
+        if cfg["selective"]:
+            # how input-dependent the learned step size is: std over tokens / mean, per mode
+            dt = F.softplus(model.dt_proj(X))
+            extra["dt_cv"] = float((dt.std((0, 1)) / dt.mean((0, 1))).mean())
     sc, lb = np.concatenate(S_), np.concatenate(L_)
     pred = sc > 0
     bal = 0.5 * (pred[lb == 1].mean() + (~pred[lb == 0]).mean())
     return {**cfg, "auroc": auroc(sc, lb), "bal_acc": float(bal),
-            "pos_rate": float(lb.mean()), "seconds": time.time() - t0}
+            "pos_rate": float(lb.mean()), "seconds": time.time() - t0, **extra}
 
 
 def job_csl(cfg):
@@ -406,18 +442,32 @@ def job_csl(cfg):
 
     # test: each test graph is judged from `eval_walks` independent walks
     model.eval()
-    ev = np.random.default_rng(cfg["seed"] + 999)
     y = np.repeat(np.arange(C), cfg["eval_per_class"])
-    logit_sum = torch.zeros(len(y), C)
-    with torch.no_grad():
-        for _ in range(cfg["eval_walks"]):
-            for i in range(0, len(y), 250):
-                out = model(batch(y[i:i + 250], ev, T=cfg.get("eval_T", T)))
-                logit_sum[i:i + 250] += out[0] if isinstance(out, tuple) else out
-    pred = logit_sum.argmax(1).numpy()
+
+    def evaluate(T_eval, seed_off):
+        ev = np.random.default_rng(cfg["seed"] + seed_off)
+        logit_sum = torch.zeros(len(y), C)
+        by_walks = {}
+        with torch.no_grad():
+            for w in range(1, cfg["eval_walks"] + 1):
+                for i in range(0, len(y), 250):
+                    out = model(batch(y[i:i + 250], ev, T=T_eval))
+                    logit_sum[i:i + 250] += out[0] if isinstance(out, tuple) else out
+                if w & (w - 1) == 0:                         # 1, 2, 4, 8, 16 walks
+                    p = logit_sum.argmax(1).numpy()
+                    by_walks[w] = [float((p[y == c] == c).mean()) for c in range(C)]
+        pred = logit_sum.argmax(1).numpy()
+        return pred, by_walks
+
+    pred, by_walks = evaluate(cfg.get("eval_T", T), 999)
     per_class = [float((pred[y == c] == c).mean()) for c in range(C)]
-    return {**cfg, "acc": float((pred == y).mean()), "per_class_acc": per_class,
-            "seconds": time.time() - t0}
+    res = {**cfg, "acc": float((pred == y).mean()), "per_class_acc": per_class,
+           "per_class_acc_by_walks": {str(w): v for w, v in by_walks.items()},
+           "seconds": time.time() - t0}
+    if cfg.get("eval_T", T) != T:
+        p2, _ = evaluate(T, 1999)
+        res["acc_at_train_T"] = float((p2 == y).mean())
+    return res
 
 
 def job_csl_oracle(cfg):
@@ -527,6 +577,29 @@ def make_configs(args):
                         steps=200 if q else 2000, lr=3e-3, eval_batches=4 if q else 32,
                         n_train_graphs=256, n_test_graphs=64, threads=th))
 
+    # controls (review): frozen optimal poles, nilpotent shift register (FIR),
+    # and the readout without comparison features
+    run_dir = os.path.join(args.out, "results_quick" if q else "results", "runs")
+    base = dict(exp="phase", selective=False, n=24, T=48 if q else 64, d_feat=8,
+                d_hidden=64 if q else 128, batch=64, steps=200 if q else 2000, lr=3e-3,
+                eval_batches=4 if q else 32, n_train_graphs=256, n_test_graphs=64, threads=th)
+    ks_ctl = [4, 8] if q else [4, 8, 12, 16]
+    seeds_ctl = range(1 if q else args.phase_seeds)
+    for k in ks_ctl:
+        for S in sorted({k, 3 * k // 2, 2 * k}):
+            if k not in ks_delay or S not in Ss_delay:
+                continue
+            dname = run_name(dict(exp="delay", model="lti", S=S, k=k, seed=0))
+            for seed in seeds_ctl:
+                cfgs["phase"].append(dict(base, model="frozen", kind="frozen", S=S, k=k,
+                                          seed=seed, poles_from=os.path.join(run_dir, dname + ".json")))
+        for S in sorted(set(Ss[:7]) | {k - 1, k, k + 1, k + 2}):
+            for seed in seeds_ctl:
+                cfgs["phase"].append(dict(base, model="shift", kind="shift", S=S, k=k, seed=seed))
+    for S in Ss:
+        for seed in seeds_ctl:
+            cfgs["phase"].append(dict(base, model="lti_nocmp", use_cmp=False, S=S, k=8, seed=seed))
+
     Ss_csl = [2, 4, 6, 8, 12, 16] if q else [2, 4, 6, 8, 10, 12, 16, 24, 32, 48, 64]
     for model in ("lti", "selective"):
         for S in Ss_csl:
@@ -538,6 +611,18 @@ def make_configs(args):
                     batch=64, steps=200 if q else 3000, lr=3e-3,
                     eval_per_class=20 if q else 100, eval_walks=2 if q else 16,
                     threads=th))
+    # CSL controls: per-lag self-supervised revisit loss, and pooled-walk curves
+    csl_base = dict(exp="csl", selective=False, T=64 if q else 128, eval_T=64 if q else 256,
+                    d_feat=8, d_hidden=64 if q else 128, batch=64, steps=200 if q else 3000,
+                    lr=3e-3, eval_per_class=20 if q else 100, eval_walks=2 if q else 16,
+                    threads=th)
+    for S in ([8] if q else [8, 16, 32, 64]):
+        for seed in range(1 if q else args.csl_seeds):
+            cfgs["csl"].append(dict(csl_base, model="lti_aux", S=S, seed=seed,
+                                    aux_weight=1.0, aux_window=16))
+    for S in ([2] if q else [2, 4, 8]):
+        for seed in range(1 if q else args.csl_seeds):
+            cfgs["csl"].append(dict(csl_base, model="lti_pool", S=S, seed=seed))
     for S in Ss_csl:                           # explicit-window reference, W = S
         for seed in range(1 if q else args.csl_seeds):
             cfgs["csl"].append(dict(
@@ -554,10 +639,34 @@ def make_configs(args):
 COL_W, TEXT_W = 3.5, 7.16
 PHASE_THR = 0.95
 BLUE, ORANGE, AQUA, YELLOW = "#2a78d6", "#eb6834", "#1baf7a", "#eda100"
-MODEL_STYLE = {"lti": dict(color=BLUE, marker="o", label="LTI (S4D-type)"),
-               "selective": dict(color=ORANGE, marker="s", label="Selective (Mamba-type)"),
-               "oracle": dict(color="#52514e", marker="^", ls="--",
-                              label="Exact counts, lags $\\leq S$")}
+MAGENTA, VIOLET, INK2 = "#e87ba4", "#4a3aa7", "#52514e"
+MODEL_STYLE = {
+    "lti": dict(color=BLUE, marker="o", label="LTI, learned poles"),
+    "selective": dict(color=ORANGE, marker="s", label=r"Input-dependent step $\Delta_t$"),
+    "oracle": dict(color=INK2, marker="^", ls="--", label=r"Exact-count reference, lags $\leq S$"),
+    "frozen": dict(color=AQUA, marker="D", label="LTI, frozen fitted poles"),
+    "shift": dict(color=VIOLET, marker="v", label=r"Shift register (nilpotent $A$)"),
+    "lti_aux": dict(color=MAGENTA, marker="P", ls="-.", label="LTI + per-lag revisit loss"),
+}
+
+
+def surrogate_auroc(lam, n=400000, seed=1):
+    """Optimal AUROC for H1: (u, v) correlated with squared correlation lam vs
+    H0: independent, u, v ~ N(0, 1): the i.i.d.-Gaussian surrogate in which a
+    state explains a fraction lam of the variance of the lagged token."""
+    if lam <= 0:
+        return 0.5
+    if lam >= 1:
+        return 1.0
+    rng = np.random.default_rng(seed)
+    r = math.sqrt(lam)
+    u0, v0, z = rng.standard_normal((3, n))
+    u1 = r * v0 + math.sqrt(1 - lam) * z
+
+    def llr(u, v):
+        return -(u * u - 2 * r * u * v + v * v) / (2 * (1 - lam)) + (u * u + v * v) / 2
+    sc = np.concatenate([llr(u0, rng.standard_normal(n)), llr(u1, v0)])
+    return auroc(sc, np.r_[np.zeros(n), np.ones(n)])
 
 
 def ieee_style():
@@ -583,20 +692,41 @@ def ieee_style():
     return plt
 
 
+def cell_means(res, model, key="auroc"):
+    """{(k, S): [values over seeds]} for one model."""
+    out = {}
+    for r in res:
+        if r["model"] == model:
+            out.setdefault((r["k"], r["S"]), []).append(r[key])
+    return out
+
+
+def ci95(v):
+    from scipy import stats
+    v = np.asarray(v, float)
+    if len(v) < 2:
+        return 0.0
+    return float(stats.t.ppf(0.975, len(v) - 1) * v.std(ddof=1) / math.sqrt(len(v)))
+
+
 def fig_delay(res, out):
     plt = ieee_style()
     fig, ax = plt.subplots(figsize=(COL_W, 2.0))
     ks = sorted({r["k"] for r in res})
-    colors = [BLUE, ORANGE, AQUA, YELLOW]
+    colors = [BLUE, ORANGE, AQUA, VIOLET]
     markers = ["o", "s", "^", "D"]
     for i, k in enumerate(ks):
         rr = sorted((r for r in res if r["k"] == k), key=lambda r: r["S"])
         ax.semilogy([r["S"] for r in rr], [max(r["rel_l2_error"], 1e-6) for r in rr],
                     color=colors[i % 4], marker=markers[i % 4], label=f"$k={k}$")
-        ax.axvline(k, color=colors[i % 4], ls=":", lw=0.8)
+        Sb = np.arange(1, k)
+        ax.semilogy(Sb, np.sqrt(1 - Sb / k), color=colors[i % 4], ls=":", lw=1.0)
+    ax.plot([], [], color=INK2, ls=":", lw=1.0, label=r"bound $\sqrt{1-S/k}$")
     ax.set_xlabel("Real state dimension $S$")
     ax.set_ylabel(r"$\|h-\delta_k\|_2$ (best fit)")
-    ax.legend(ncol=len(ks), loc="lower center", bbox_to_anchor=(0.5, 1.0), columnspacing=0.8)
+    ax.set_ylim(8e-4, 1.5)
+    ax.legend(ncol=5, loc="lower center", bbox_to_anchor=(0.5, 1.0), columnspacing=0.7,
+              handlelength=1.4, fontsize=6.5)
     fig.savefig(out)
     plt.close(fig)
 
@@ -604,70 +734,148 @@ def fig_delay(res, out):
 def fig_phase(res, out):
     plt = ieee_style()
     from matplotlib.colors import LinearSegmentedColormap
-    cmap = LinearSegmentedColormap.from_list("blue_seq", ["#f4f8fd", "#9cc3ee", BLUE, "#0d3b73"])
-    ks = sorted({r["k"] for r in res})
-    Ss = sorted({r["S"] for r in res})
+    seq = LinearSegmentedColormap.from_list("blue_seq", ["#f4f8fd", "#9cc3ee", BLUE, "#0d3b73"])
+    div = LinearSegmentedColormap.from_list("div", [BLUE, "#e9e8e4", ORANGE])
+    lti, sel = cell_means(res, "lti"), cell_means(res, "selective")
+    ks = sorted({k for k, _ in lti})
+    Ss = sorted({S for _, S in lti})
+    Z = np.array([[np.mean(lti[(k, S)]) for k in ks] for S in Ss])
+    D = np.array([[np.mean(sel[(k, S)]) - np.mean(lti[(k, S)]) for k in ks] for S in Ss])
     fig, axes = plt.subplots(1, 2, figsize=(TEXT_W, 2.2), sharey=True,
-                             gridspec_kw=dict(wspace=0.06))
-    for ax, model in zip(axes, ("lti", "selective")):
-        Z = np.full((len(Ss), len(ks)), np.nan)
-        for i, S in enumerate(Ss):
-            for j, k in enumerate(ks):
-                v = [r["auroc"] for r in res if r["model"] == model and r["S"] == S and r["k"] == k]
-                if v:
-                    Z[i, j] = np.mean(v)
-        im = ax.imshow(Z, origin="lower", aspect="auto", cmap=cmap, vmin=0.5, vmax=1.0)
-        for i in range(len(Ss)):
-            for j in range(len(ks)):
-                if not np.isnan(Z[i, j]):
-                    ax.text(j, i, f"{Z[i, j]:.2f}".lstrip("0"), ha="center", va="center", fontsize=5,
-                            color="white" if Z[i, j] > 0.8 else "#0b0b0b")
-        # staircase: first S row with S >= k in each column
+                             gridspec_kw=dict(wspace=0.32))
+    im0 = axes[0].imshow(Z, origin="lower", aspect="auto", cmap=seq, vmin=0.5, vmax=1.0)
+    im1 = axes[1].imshow(D, origin="lower", aspect="auto", cmap=div, vmin=-0.1, vmax=0.1)
+    for i in range(len(Ss)):
+        for j in range(len(ks)):
+            axes[0].text(j, i, f"{Z[i, j]:.2f}".lstrip("0"), ha="center", va="center",
+                         fontsize=6, color="white" if Z[i, j] > 0.8 else "#0b0b0b")
+            dtxt = ".00" if abs(D[i, j]) < 0.005 else f"{D[i, j]:+.2f}".replace("0.", ".")
+            axes[1].text(j, i, dtxt, ha="center", va="center",
+                         fontsize=6, color="#0b0b0b")
+    for ax in axes:
         xs, ys = [], []
         for j, k in enumerate(ks):
             i0 = next((i for i, S in enumerate(Ss) if S >= k), len(Ss))
             xs += [j - 0.5, j + 0.5]
             ys += [i0 - 0.5, i0 - 0.5]
-        ax.plot(xs, ys, color="#e34948", lw=1.4, ls="--", label="$S=k$ (Hankel bound)")
-        xe, ye = [], []
-        for j in range(len(ks)):
-            i0 = next((i for i in range(len(Ss)) if Z[i, j] >= PHASE_THR), len(Ss))
-            xe += [j - 0.5, j + 0.5]
-            ye += [i0 - 0.5, i0 - 0.5]
-        ax.plot(xe, ye, color="#0b0b0b", lw=1.0, ls=":",
-                label=f"empirical (AUROC $\\geq$ {PHASE_THR})")
+        ax.plot(xs, ys, color="#e34948", lw=1.4, ls="--", label="$S=k$ (Hankel threshold)")
         ax.set_xticks(range(len(ks)), [str(k) for k in ks])
         ax.set_yticks(range(len(Ss)), [str(S) for S in Ss])
         ax.set_xlabel("Revisit lag $k$")
-        ax.set_title(MODEL_STYLE[model]["label"])
         ax.grid(False)
+    xe, ye = [], []
+    for j in range(len(ks)):
+        i0 = next((i for i in range(len(Ss)) if Z[i, j] >= PHASE_THR), len(Ss))
+        xe += [j - 0.5, j + 0.5]
+        ye += [i0 - 0.5, i0 - 0.5]
+    axes[0].plot(xe, ye, color="#0b0b0b", lw=1.0, ls=":", label=f"AUROC $\\geq$ {PHASE_THR}")
+    axes[0].set_title("(a) LTI, learned poles: test AUROC")
+    axes[1].set_title(r"(b) Input-dependent $\Delta_t$ minus LTI")
     axes[0].set_ylabel("Real state dimension $S$")
     h, l = axes[0].get_legend_handles_labels()
     fig.legend(h, l, loc="lower center", bbox_to_anchor=(0.46, 0.99), ncol=2, fontsize=7)
-    cb = fig.colorbar(im, ax=axes, fraction=0.025, pad=0.015)
-    cb.set_label("Test AUROC")
-    cb.outline.set_linewidth(0.4)
+    for im, ax, lab in ((im0, axes[0], "AUROC"), (im1, axes[1], r"$\Delta$AUROC")):
+        cb = fig.colorbar(im, ax=ax, fraction=0.05, pad=0.02)
+        cb.set_label(lab)
+        cb.outline.set_linewidth(0.4)
     fig.savefig(out)
     plt.close(fig)
 
 
-def phase_thresholds(res, thr=PHASE_THR):
+def fig_ratio(res, out):
+    """AUROC against S/k for all variants, with the Gaussian-surrogate curve."""
+    plt = ieee_style()
+    fig, ax = plt.subplots(figsize=(COL_W, 2.2))
+    lam = np.r_[np.linspace(0.02, 0.98, 25)]
+    ax.plot(lam, [surrogate_auroc(x, n=100000) for x in lam], color="#0b0b0b", lw=1.2,
+            label=r"Gaussian surrogate, $\lambda=S/k$")
+    ax.axvline(1.0, color="#e34948", ls="--", lw=1.0)
+    for model, size, alpha in (("lti", 9, 0.55), ("selective", 9, 0.55), ("frozen", 16, 0.9),
+                               ("shift", 14, 0.9)):
+        cm = cell_means(res, model)
+        if not cm:
+            continue
+        st = MODEL_STYLE[model]
+        x = np.array([S / k for (k, S) in cm])
+        y = np.array([np.mean(v) for v in cm.values()])
+        ax.scatter(x, y, s=size, color=st["color"], marker=st["marker"], alpha=alpha,
+                   edgecolors="white", linewidths=0.3, label=st["label"], zorder=3)
+    ax.set_xscale("log", base=2)
+    ax.set_xticks([1 / 8, 1 / 4, 1 / 2, 1, 2, 4, 8, 16],
+                  ["1/8", "1/4", "1/2", "1", "2", "4", "8", "16"])
+    ax.set_xlabel("State per lag, $S/k$")
+    ax.set_ylabel("Test AUROC (lag-$k$ revisit)")
+    ax.set_ylim(0.45, 1.02)
+    ax.legend(loc="lower center", bbox_to_anchor=(0.5, 1.0), ncol=2, fontsize=6,
+              handletextpad=0.3, columnspacing=0.8)
+    fig.savefig(out)
+    plt.close(fig)
+
+
+def phase_thresholds(res, thr=PHASE_THR, models=("lti", "selective")):
     rows = []
-    for model in ("lti", "selective"):
-        for k in sorted({r["k"] for r in res}):
-            by_S = {}
-            for r in res:
-                if r["model"] == model and r["k"] == k:
-                    by_S.setdefault(r["S"], []).append(r["auroc"])
-            S_emp = next((S for S in sorted(by_S) if np.mean(by_S[S]) >= thr), None)
-            rows.append(dict(model=model, k=k, hankel_S=k, empirical_S=S_emp,
+    for model in models:
+        cm = cell_means(res, model)
+        for k in sorted({k for k, _ in cm}):
+            Ss = sorted(S for kk, S in cm if kk == k)
+            S_emp = next((S for S in Ss if np.mean(cm[(k, S)]) >= thr), None)
+            rows.append(dict(model=model, k=k, thr=thr, hankel_S=k, empirical_S=S_emp,
                              ratio=None if S_emp is None else S_emp / k))
     return rows
 
 
-def _csl_table(res):
+def phase_stats(res):
+    """Everything the manuscript reports about the token-level experiments."""
+    from scipy import stats
+    out = {}
+    lti, sel = cell_means(res, "lti"), cell_means(res, "selective")
+    cells = sorted(lti)
+    d_cell = np.array([np.mean(sel[c]) - np.mean(lti[c]) for c in cells])
+    out["n_seeds"] = int(min(len(v) for v in lti.values()))
+    out["sel_minus_lti_mean"] = float(d_cell.mean())
+    out["sel_minus_lti_ci95"] = ci95(d_cell)
+    out["sel_minus_lti_absmean"] = float(np.abs(d_cell).mean())
+    out["sel_minus_lti_range"] = [float(d_cell.min()), float(d_cell.max())]
+    out["sel_minus_lti_wilcoxon_p"] = float(stats.wilcoxon(d_cell).pvalue)
+    out["sel_minus_lti_ttest_p"] = float(stats.ttest_1samp(d_cell, 0).pvalue)
+    seed_sd = [np.std(v, ddof=1) for v in lti.values() if len(v) > 1]
+    out["lti_seed_sd_median"] = float(np.median(seed_sd)) if seed_sd else None
+    ratios = {}
+    for thr in (0.8, 0.9, 0.95, 0.99):
+        for model in ("lti", "selective"):
+            rr = [r["ratio"] for r in phase_thresholds(res, thr, (model,)) if r["ratio"]]
+            ratios[f"{model}@{thr}"] = dict(median=float(np.median(rr)) if rr else None,
+                                            min=float(min(rr)) if rr else None,
+                                            max=float(max(rr)) if rr else None, n=len(rr))
+    out["threshold_ratios"] = ratios
+    for model in ("lti", "selective"):
+        cm = cell_means(res, model)
+        below = [np.mean(v) for (k, S), v in cm.items() if S < k]
+        at = [np.mean(v) for (k, S), v in cm.items() if S == k]
+        above = [np.mean(v) for (k, S), v in cm.items() if S >= 4 * k]
+        out[f"{model}_auc_below"] = float(np.mean(below))
+        out[f"{model}_auc_at_k"] = [float(min(at)), float(max(at))] if at else None
+        out[f"{model}_auc_above4k"] = float(np.mean(above))
+        # surrogate check: below-bound cells vs optimal Gaussian-surrogate AUROC
+        viol = [(k, S, float(np.mean(v)), surrogate_auroc(S / k, n=100000))
+                for (k, S), v in cm.items() if S < k]
+        out[f"{model}_below_cells"] = len(viol)
+        out[f"{model}_below_cells_under_surrogate"] = int(sum(o <= s + 0.01 for _, _, o, s in viol))
+        out[f"{model}_below_max_excess"] = float(max(o - s for _, _, o, s in viol))
+    dtcv = [r["dt_cv"] for r in res if r["model"] == "selective" and "dt_cv" in r]
+    out["dt_cv_median"] = float(np.median(dtcv)) if dtcv else None
+    out["dt_cv_max"] = float(np.max(dtcv)) if dtcv else None
+    for model in ("frozen", "shift", "lti_nocmp"):
+        cm = cell_means(res, model)
+        out[model] = {f"k{k}_S{S}": [float(np.mean(v)), ci95(v)] for (k, S), v in sorted(cm.items())}
+    # matching LTI cells for the controls
+    out["lti_cells"] = {f"k{k}_S{S}": [float(np.mean(v)), ci95(v)] for (k, S), v in sorted(lti.items())}
+    return out
+
+
+def _csl_table(res, models=("lti", "selective", "oracle", "lti_aux")):
     tab = {}
-    for model in ("lti", "selective", "oracle"):
+    for model in models:
         for S in sorted({r["S"] for r in res}):
             rr = [r for r in res if r["model"] == model and r["S"] == S]
             if rr:
@@ -679,18 +887,19 @@ def _csl_table(res):
 def fig_csl_acc(res, out):
     plt = ieee_style()
     tab = _csl_table(res)
-    fig, ax = plt.subplots(figsize=(COL_W, 2.0))
-    for model in ("lti", "selective", "oracle"):
+    fig, ax = plt.subplots(figsize=(COL_W, 2.1))
+    for model in ("lti", "selective", "lti_aux", "oracle"):
         Ss = sorted(S for (m, S) in tab if m == model)
+        if not Ss:
+            continue
         mu = np.array([np.mean(tab[(model, S)]["acc"]) for S in Ss])
-        sd = np.array([np.std(tab[(model, S)]["acc"]) for S in Ss])
+        ci = np.array([ci95(tab[(model, S)]["acc"]) for S in Ss])
         st = MODEL_STYLE[model]
         ax.plot(Ss, 100 * mu, color=st["color"], marker=st["marker"], ls=st.get("ls", "-"),
                 label=st["label"])
-        ax.fill_between(Ss, 100 * (mu - sd), 100 * (mu + sd), color=st["color"], alpha=0.18, lw=0)
-    ax.axhline(10, color="#52514e", ls="--", lw=0.8)
-    ax.text(ax.get_xlim()[1] - 0.5, 11, "1-WL / MPNN (chance)", ha="right", va="bottom",
-            fontsize=6, color="#52514e")
+        ax.fill_between(Ss, 100 * (mu - ci), 100 * (mu + ci), color=st["color"], alpha=0.15, lw=0)
+    ax.axhline(10, color=INK2, ls=":", lw=0.8)
+    ax.text(62, 11, "1-WL (provably chance)", ha="right", va="bottom", fontsize=6, color=INK2)
     ax.set_xlabel("Real state dimension $S$")
     ax.set_ylabel("CSL test accuracy (%)")
     ax.set_ylim(0, 102)
@@ -700,44 +909,48 @@ def fig_csl_acc(res, out):
 
 
 def csl_onsets(res, horizons, thr=0.8):
-    tab = _csl_table(res)
+    tab = _csl_table(res, ("lti", "selective", "oracle"))
     rows = []
     for model in ("lti", "selective", "oracle"):
         Ss = sorted(S for (m, S) in tab if m == model)
         for c, s in enumerate(CSL_SKIPS):
             onset = next((S for S in Ss if tab[(model, S)]["per_class"][c] >= thr), None)
-            rows.append(dict(model=model, skip=s, horizon=horizons[s],
-                             predicted_S=horizons[s],
-                             onset_S=onset))
+            rows.append(dict(model=model, skip=s, horizon=horizons[s], onset_S=onset))
     return rows
 
 
-def fig_csl_threshold(rows, out):
-    plt = ieee_style()
-    fig, ax = plt.subplots(figsize=(COL_W, 2.2))
-    xs_all = [r["predicted_S"] for r in rows if r["predicted_S"]]
-    ys_all = [r["onset_S"] for r in rows if r["onset_S"]]
-    ymax = max(ys_all + [10]) * 1.15
-    xg = np.linspace(0, max(xs_all) + 1, 50)
-    ax.plot(xg, xg, color="#52514e", ls="--", lw=0.8, label="onset $=W^*$ (bound)")
-    for off, model in ((-0.2, "lti"), (0.0, "oracle"), (0.2, "selective")):
-        st = MODEL_STYLE[model]
-        rr = [r for r in rows if r["model"] == model and r["predicted_S"]]
-        x = np.array([r["predicted_S"] for r in rr if r["onset_S"]], float)
-        y = np.array([r["onset_S"] for r in rr if r["onset_S"]], float)
-        ax.scatter(x + off, y, s=14, color=st["color"], marker=st["marker"], label=st["label"],
-                   edgecolors="white", linewidths=0.4, zorder=3)
-        miss = [r["predicted_S"] + off for r in rr if not r["onset_S"]]
-        if miss:
-            ax.scatter(miss, [ymax * 0.97] * len(miss), s=14, marker="v", facecolors="none",
-                       edgecolors=st["color"], linewidths=0.8, zorder=3)
-    ax.set_xlim(0, max(xs_all) + 1)
-    ax.set_ylim(0, ymax)
-    ax.set_xlabel(r"Predicted minimal state $W^*(s)$")
-    ax.set_ylabel("Observed onset $S$ (class acc $\\geq$ 80%)")
-    ax.legend(loc="lower center", bbox_to_anchor=(0.5, 1.0), ncol=2, fontsize=6)
-    fig.savefig(out)
-    plt.close(fig)
+def csl_stats(res):
+    from scipy import stats
+    out = {}
+    tab = _csl_table(res)
+    out["acc"] = {f"{m}_S{S}": [float(np.mean(v["acc"])), ci95(v["acc"]), len(v["acc"])]
+                  for (m, S), v in sorted(tab.items())}
+    # paired LTI vs input-dependent step over all (S, seed)
+    pairs = []
+    for r in res:
+        if r["model"] == "lti":
+            q = [x for x in res if x["model"] == "selective" and x["S"] == r["S"]
+                 and x["seed"] == r["seed"]]
+            if q:
+                pairs.append(q[0]["acc"] - r["acc"])
+    if pairs:
+        out["sel_minus_lti_mean"] = float(np.mean(pairs))
+        out["sel_minus_lti_ci95"] = ci95(pairs)
+        out["sel_minus_lti_wilcoxon_p"] = float(stats.wilcoxon(pairs).pvalue)
+    at_train = [(r["model"], r["S"], r["acc"], r["acc_at_train_T"]) for r in res
+                if "acc_at_train_T" in r]
+    if at_train:
+        out["acc_eval256_minus_eval128_mean"] = float(np.mean([a - b for _, _, a, b in at_train]))
+    pool = {}
+    for r in res:
+        if r["model"] == "lti_pool":
+            for w, pc in r["per_class_acc_by_walks"].items():
+                pool.setdefault((r["S"], int(w)), []).append(pc)
+    out["pool_class_r2"] = {f"S{S}_w{w}": float(np.mean([pc[0] for pc in v]))
+                            for (S, w), v in sorted(pool.items())}
+    out["pool_overall"] = {f"S{S}_w{w}": float(np.mean(v))
+                           for (S, w), v in sorted(pool.items())}
+    return out
 
 
 # --------------------------------------------------------------------------
@@ -757,7 +970,7 @@ def main():
     ap.add_argument("--exp", nargs="+", default=["delay", "phase", "csl"], choices=list(JOBS))
     ap.add_argument("--workers", type=int, default=8, help="parallel worker processes")
     ap.add_argument("--threads", type=int, default=1, help="torch threads per worker")
-    ap.add_argument("--phase-seeds", type=int, default=2)
+    ap.add_argument("--phase-seeds", type=int, default=3)
     ap.add_argument("--csl-seeds", type=int, default=3)
     ap.add_argument("--quick", action="store_true", help="tiny smoke-test configuration")
     ap.add_argument("--plots-only", action="store_true")
@@ -779,6 +992,8 @@ def main():
     summary["csl_nb_return_rates_lag1_12"] = {str(s): R[i, :12].round(5).tolist()
                                               for i, s in enumerate(CSL_SKIPS)}
     print("CSL distinguishability horizons W*(s):", horizons)
+    summary["csl_horizon_tau_invariant"] = {
+        str(t): [csl_horizons(tol=t)[0][s] for s in CSL_SKIPS] for t in (1e-4, 1e-3, 3e-3, 5e-3)}
 
     results = {}
     for exp in args.exp:
@@ -795,24 +1010,28 @@ def main():
         write_csv(os.path.join(res_dir, "delay.csv"), results["delay"], ["k", "S", "rel_l2_error"])
         summary["delay"] = [{k: r[k] for k in ("k", "S", "rel_l2_error")} for r in results["delay"]]
     if results.get("phase"):
-        fig_phase(results["phase"], os.path.join(fig_dir, "fig2_phase_diagram.pdf"))
-        cols = ["model", "k", "S", "seed", "auroc", "bal_acc", "pos_rate", "seconds"]
-        write_csv(os.path.join(res_dir, "phase.csv"), results["phase"], cols)
-        summary["phase"] = [{k: r[k] for k in cols} for r in results["phase"]]
-        summary["phase_thresholds"] = phase_thresholds(results["phase"])
+        ph = results["phase"]
+        fig_phase(ph, os.path.join(fig_dir, "fig2_phase_diagram.pdf"))
+        fig_ratio(ph, os.path.join(fig_dir, "fig4_auroc_vs_ratio.pdf"))
+        cols = ["model", "k", "S", "seed", "auroc", "bal_acc", "pos_rate", "dt_cv", "seconds"]
+        write_csv(os.path.join(res_dir, "phase.csv"), ph, cols)
+        summary["phase"] = [{k: r.get(k) for k in cols} for r in ph]
+        summary["phase_thresholds"] = phase_thresholds(ph)
         write_csv(os.path.join(res_dir, "phase_thresholds.csv"), summary["phase_thresholds"],
-                  ["model", "k", "hankel_S", "empirical_S", "ratio"])
+                  ["model", "k", "thr", "hankel_S", "empirical_S", "ratio"])
+        summary["phase_stats"] = phase_stats(ph)
     if results.get("csl"):
-        fig_csl_acc(results["csl"], os.path.join(fig_dir, "fig3_csl_accuracy.pdf"))
-        rows = csl_onsets(results["csl"], horizons)
-        fig_csl_threshold(rows, os.path.join(fig_dir, "fig4_csl_threshold.pdf"))
+        cs = results["csl"]
+        fig_csl_acc(cs, os.path.join(fig_dir, "fig3_csl_accuracy.pdf"))
+        rows = csl_onsets(cs, horizons)
         write_csv(os.path.join(res_dir, "csl_onsets.csv"), rows,
-                  ["model", "skip", "horizon", "predicted_S", "onset_S"])
-        cols = ["model", "S", "seed", "acc", "seconds"]
-        write_csv(os.path.join(res_dir, "csl.csv"), results["csl"], cols)
-        summary["csl"] = [{**{k: r[k] for k in cols}, "per_class_acc": r["per_class_acc"]}
-                          for r in results["csl"]]
+                  ["model", "skip", "horizon", "onset_S"])
+        cols = ["model", "S", "seed", "acc", "acc_at_train_T", "seconds"]
+        write_csv(os.path.join(res_dir, "csl.csv"), cs, cols)
+        summary["csl"] = [{**{k: r.get(k) for k in cols}, "per_class_acc": r["per_class_acc"]}
+                          for r in cs]
         summary["csl_onsets"] = rows
+        summary["csl_stats"] = csl_stats(cs)
 
     with open(os.path.join(res_dir, "summary.json"), "w") as fh:
         json.dump(summary, fh, indent=1)

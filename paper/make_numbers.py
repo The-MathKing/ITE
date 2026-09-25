@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Turn results/summary.json into LaTeX macros (numbers.tex) and the CSL table
-(table_csl.tex) so every number in the manuscript is generated, not typed."""
+"""Turn results/summary.json (+ results/leakage.json) into LaTeX macros
+(numbers.tex) and the CSL table (table_csl.tex), so every number in the
+manuscript is generated, not typed."""
 
 import json
 import os
@@ -9,8 +10,9 @@ import sys
 import numpy as np
 
 root = os.path.dirname(os.path.abspath(__file__))
-summary = json.load(open(sys.argv[1] if len(sys.argv) > 1 else
-                         os.path.join(root, "..", "results", "summary.json")))
+res_dir = os.path.join(root, "..", "results")
+summary = json.load(open(sys.argv[1] if len(sys.argv) > 1 else os.path.join(res_dir, "summary.json")))
+leak = json.load(open(os.path.join(res_dir, "leakage.json")))
 M = {}
 
 
@@ -22,90 +24,97 @@ def pct(x):
     return f"{100 * x:.1f}"
 
 
-# ---- delay realisation --------------------------------------------------
+# ---- delay realisation ------------------------------------------------------
 d = summary["delay"]
-below = [r["rel_l2_error"] for r in d if r["S"] < r["k"]]
-at = [r["rel_l2_error"] for r in d if r["S"] >= r["k"]]
-M["delayErrBelow"] = f2(np.median(below))
-M["delayErrAbove"] = f2(np.median(at))
-M["delayErrMinBelow"] = f2(np.min(below))
+below = [r for r in d if r["S"] < r["k"]]
+excess = [r["rel_l2_error"] ** 2 - (1 - r["S"] / r["k"]) for r in below]
+assert min(excess) >= -1e-6, "a delay fit violates the Theorem 1 bound"
+M["delayBoundN"] = str(len(below))
+M["delayExcess"] = f2(np.median(excess))
 over = []
 for k in sorted({r["k"] for r in d}):
     rr = sorted((r for r in d if r["k"] == k), key=lambda r: r["S"])
-    s10 = next((r["S"] for r in rr if r["rel_l2_error"] <= 0.1), None)
+    s10 = next((r["S"] for r in rr if r["rel_l2_error"] <= 0.105), None)
     if s10:
         over.append(s10 / k)
-M["delayOverhead"] = f"{np.median(over):.1f}" if over else "--"
+M["delayOverhead"] = f"{np.median(over):.1f}"
 
-# ---- phase diagram -------------------------------------------------------
-p = summary["phase"]
-for tag, model in (("LTI", "lti"), ("Sel", "selective")):
-    rr = [r for r in p if r["model"] == model]
-    M[f"phaseAucBelow{tag}"] = f2(np.mean([r["auroc"] for r in rr if r["S"] < r["k"]]))
-    M[f"phaseAucAbove{tag}"] = f2(np.mean([r["auroc"] for r in rr if r["S"] >= 4 * r["k"]]))
-    th = [t for t in summary["phase_thresholds"] if t["model"] == model]
-    ratios = [t["ratio"] for t in th if t["ratio"] is not None]
-    M[f"phaseRatio{tag}"] = f"{np.median(ratios):.1f}" if ratios else "--"
-    M[f"phaseReached{tag}"] = str(len(ratios))
-    M[f"phaseNk{tag}"] = str(len(th))
-    M[f"phaseMaxK{tag}"] = str(max([t["k"] for t in th if t["ratio"] is not None], default=0))
-diff = []
-for r in p:
-    if r["model"] == "lti":
-        q = [x for x in p if x["model"] == "selective" and x["S"] == r["S"] and x["k"] == r["k"]
-             and x["seed"] == r["seed"]]
-        if q:
-            diff.append(q[0]["auroc"] - r["auroc"])
-M["phaseSelMinusLTI"] = f"{np.mean(diff):+.3f}"
-M["phaseSelMinusLTIabs"] = f"{np.mean(np.abs(diff)):.3f}"
+# ---- token-level ------------------------------------------------------------
+ps = summary["phase_stats"]
+M["nSeeds"] = str(ps["n_seeds"])
+M["aucAtKmin"], M["aucAtKmax"] = f2(ps["lti_auc_at_k"][0]), f2(ps["lti_auc_at_k"][1])
+for tag, thr in zip("abcd", ("0.8", "0.9", "0.95", "0.99")):
+    M[f"ratioLTI{tag}"] = f"{ps['threshold_ratios'][f'lti@{thr}']['median']:.1f}"
+    M[f"ratioSel{tag}"] = f"{ps['threshold_ratios'][f'selective@{thr}']['median']:.1f}"
+M["belowN"] = str(ps["lti_below_cells"])
+M["belowUnderLTI"] = str(ps["lti_below_cells_under_surrogate"])
+M["belowUnderSel"] = str(ps["selective_below_cells_under_surrogate"])
+M["leakLo"], M["leakHi"] = f2(leak["min"]), f2(leak["max"])
+M["selDiff"] = f"{ps['sel_minus_lti_mean']:+.3f}"
+M["selCI"] = f"{ps['sel_minus_lti_ci95']:.3f}"
+p = ps["sel_minus_lti_wilcoxon_p"]
+M["selP"] = f"{p:.2f}" if p >= 0.01 else f"{p:.1e}"
+M["dtCV"] = f"{100 * ps['dt_cv_median']:.0f}"
 
-# ---- CSL -----------------------------------------------------------------
-c = summary["csl"]
-Ss = sorted({r["S"] for r in c})
-acc = {}
-for model in ("lti", "selective", "oracle"):
-    for S in Ss:
-        v = [r["acc"] for r in c if r["model"] == model and r["S"] == S]
-        if v:
-            acc[(model, S)] = (np.mean(v), np.std(v))
-Smax = max(Ss)
-for tag, model in (("LTI", "lti"), ("Sel", "selective"), ("Or", "oracle")):
-    best = max((acc[(model, S)] + (S,) for S in Ss if (model, S) in acc), key=lambda t: t[0])
-    M[f"csl{tag}Best"], M[f"csl{tag}BestStd"], M[f"csl{tag}BestS"] = pct(best[0]), pct(best[1]), str(best[2])
-    M[f"csl{tag}AtMax"] = pct(acc[(model, Smax)][0])
+
+def mean_over_k(tab, rel):
+    """Mean seed-averaged AUROC over k in {4, 8, 12, 16} at S = rel(k)."""
+    v = [tab[f"k{k}_S{rel(k)}"][0] for k in (4, 8, 12, 16) if f"k{k}_S{rel(k)}" in tab]
+    return f2(np.mean(v))
+
+
+M["shiftAtK"] = mean_over_k(ps["shift"], lambda k: k)
+M["shiftAtKp"] = mean_over_k(ps["shift"], lambda k: k + 1)
+M["frozenAtK"] = mean_over_k(ps["frozen"], lambda k: k)
+M["frozenAtTwoK"] = mean_over_k(ps["frozen"], lambda k: 2 * k)
+M["ltiAtK"] = mean_over_k(ps["lti_cells"], lambda k: k)
+M["ltiAtTwoK"] = mean_over_k(ps["lti_cells"], lambda k: 2 * k)
+M["ltiEightThirtyTwo"] = f2(ps["lti_cells"]["k8_S32"][0])
+M["nocmpEightThirtyTwo"] = f2(ps["lti_nocmp"]["k8_S32"][0])
+
+# ---- CSL ----------------------------------------------------------------------
+cs = summary["csl_stats"]
+acc = cs["acc"]
+Smax = max(int(k.split("_S")[1]) for k in acc if k.startswith("lti_S"))
 M["cslSmax"] = str(Smax)
-M["cslOrOnsetS"] = str(next((S for S in Ss if acc[("oracle", S)][0] >= 0.95), "--"))
-ons = summary["csl_onsets"]
-for tag, model in (("LTI", "lti"), ("Sel", "selective"), ("Or", "oracle")):
-    rr = [o for o in ons if o["model"] == model]
-    M[f"cslClasses{tag}"] = str(sum(o["onset_S"] is not None for o in rr))
-    M[f"cslExact{tag}"] = str(sum(o["onset_S"] == o["predicted_S"] for o in rr))
-    grid_up = lambda w: min((S for S in Ss if S >= w), default=None)
-    M[f"cslGrid{tag}"] = str(sum(o["onset_S"] == grid_up(o["predicted_S"]) for o in rr))
-    M[f"cslBelow{tag}"] = str(sum(o["onset_S"] is not None and o["onset_S"] < o["predicted_S"]
-                                  for o in rr))
-    x = np.array([o["predicted_S"] for o in rr if o["onset_S"]], float)
-    y = np.array([o["onset_S"] for o in rr if o["onset_S"]], float)
-    M[f"cslSlope{tag}"] = f"{(x * y).sum() / (x * x).sum():.1f}" if len(x) else "--"
+M["cslLTIatTwo"] = pct(acc["lti_S2"][0])
+M["cslOrBest"] = pct(max(v[0] for k, v in acc.items() if k.startswith("oracle_")))
+M["cslLTIBest"], M["cslLTIBestCI"] = pct(acc[f"lti_S{Smax}"][0]), pct(acc[f"lti_S{Smax}"][1])
+M["cslSelBest"], M["cslSelBestCI"] = pct(acc[f"selective_S{Smax}"][0]), pct(acc[f"selective_S{Smax}"][1])
+aux = {int(k.split("_S")[1]): v for k, v in acc.items() if k.startswith("lti_aux_")}
+if aux:
+    Sa = max(aux, key=lambda S: aux[S][0])
+    M["cslAuxBest"], M["cslAuxBestCI"], M["cslAuxBestS"] = pct(aux[Sa][0]), pct(aux[Sa][1]), str(Sa)
+    M["cslLTIatAuxS"] = pct(acc[f"lti_S{Sa}"][0])
+M["cslSelMinusLTI"] = f"{100 * cs['sel_minus_lti_mean']:+.1f}"
+M["cslSelMinusLTICI"] = f"{100 * cs['sel_minus_lti_ci95']:.1f}"
+if "acc_eval256_minus_eval128_mean" in cs:
+    M["cslEvalLenGain"] = f"{100 * cs['acc_eval256_minus_eval128_mean']:+.1f}"
+pool = cs["pool_class_r2"]
+M["poolTwoOne"], M["poolTwoSixteen"] = pct(pool["S2_w1"]), pct(pool["S2_w16"])
 
 W = summary["csl_horizon_W"]
 M["cslWmin"], M["cslWmax"] = str(min(W.values())), str(max(W.values()))
+ons = summary["csl_onsets"]
+S_grid = sorted({int(k.split("_S")[1]) for k in acc if k.startswith("oracle_")})
+grid_up = lambda w: min((S for S in S_grid if S >= w), default=None)
+M["cslGridOr"] = str(sum(o["onset_S"] == grid_up(o["horizon"]) for o in ons if o["model"] == "oracle"))
 
 with open(os.path.join(root, "numbers.tex"), "w") as fh:
     fh.write("% auto-generated by make_numbers.py -- do not edit\n")
     for k, v in M.items():
         fh.write(f"\\newcommand{{\\{k}}}{{{v}}}\n")
 
-# ---- Table: horizons and onsets -------------------------------------------
+# ---- Table: horizons and onsets ----------------------------------------------
 by = {(o["model"], o["skip"]): o["onset_S"] for o in ons}
-fmt = lambda v: "--" if v is None else str(v)
+fmt = lambda v: "---" if v is None else str(v)
 skips = sorted({o["skip"] for o in ons})
 rows = [
-    r"$s$ & " + " & ".join(map(str, skips)) + r" \\ \midrule",
-    r"$W^*(s)$ & " + " & ".join(str(W[str(s)]) for s in skips) + r" \\",
-    r"Oracle & " + " & ".join(fmt(by[("oracle", s)]) for s in skips) + r" \\",
+    r"$r$ & " + " & ".join(map(str, skips)) + r" \\ \midrule",
+    r"$W^*(r)$ & " + " & ".join(str(W[str(s)]) for s in skips) + r" \\",
+    r"Exact counts & " + " & ".join(fmt(by[("oracle", s)]) for s in skips) + r" \\",
     r"LTI & " + " & ".join(fmt(by[("lti", s)]) for s in skips) + r" \\",
-    r"Selective & " + " & ".join(fmt(by[("selective", s)]) for s in skips) + r" \\",
+    r"Input-dep.\ $\Delta_t$ & " + " & ".join(fmt(by[("selective", s)]) for s in skips) + r" \\",
 ]
 with open(os.path.join(root, "table_csl.tex"), "w") as fh:
     fh.write("% auto-generated by make_numbers.py -- do not edit\n"
