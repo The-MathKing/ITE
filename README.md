@@ -1,9 +1,12 @@
-# Memory Is Expressivity — walk-based SSMs on graphs (Phase 2 rig)
+# Limits on delay detection by low-order state-space models
 
-`walk_ssm_barrier.py` benchmarks the claim that a walk-based state-space model
-with real state dimension `S` cannot detect closed walks longer than `S - 1`.
-LTI models are covered by a Hankel-rank argument; selective models are
-measured empirically. The code uses plain PyTorch and runs on CPU.
+`walk_ssm_barrier.py` tests how much state an SSM needs to detect that the
+current token repeats the one `k` steps earlier, the primitive behind cycle
+detection by random-walk graph learners. Theory: exact detection needs
+`S >= k+1` with nilpotent (FIR) dynamics; for `S < k` any linear probe
+explains at most `S/k` of the lagged token's variance (Hankel rank), which
+bounds every readout for Gaussian inputs. The code uses plain PyTorch and
+runs on CPU.
 
 ## Install & run
 
@@ -25,10 +28,14 @@ other jobs are using the CPU, reduce `--workers`.
 
 | id | what | figure |
 |----|------|--------|
-| `delay` | gradient fit of a diagonal LTI kernel to the pure delay `z^-k` vs `S` | `figures/fig1_delay_realization.pdf` |
-| `phase` | token-level lag-`k` revisit detection on non-backtracking walks over random 4-regular graphs, `(S, k)` grid, LTI vs selective | `figures/fig2_phase_diagram.pdf` (double column) |
-| `csl` | 10-class CSL (1-WL: 10 %), accuracy vs `S`; LTI, selective, and an exact-count oracle with window `S` | `figures/fig3_csl_accuracy.pdf` |
-| `csl` | per-class onset `S` vs predicted `W*(s)` from the exact NB-return horizon | `figures/fig4_csl_threshold.pdf` |
+| `delay` | gradient fit of an `S`-state diagonal LTI kernel to the delay `z^-k`, against the bound `sqrt(1-S/k)` | `figures/fig1_delay_realization.pdf` |
+| `phase` | token-level lag-`k` revisit detection on non-backtracking walks over random 4-regular graphs, `(S, k)` grid, LTI vs input-dependent step, 3 seeds | `figures/fig2_phase_diagram.pdf` (double column) |
+| `phase` controls | frozen fitted poles, nilpotent shift register, no comparison features | `figures/fig4_auroc_vs_ratio.pdf` |
+| `csl` | 10-class CSL accuracy vs `S`: LTI, input-dependent step, per-lag revisit loss, exact-count reference; pooled-walk curves | `figures/fig3_csl_accuracy.pdf`, Table I |
+
+`leakage_check.py` tests whether short-lag walk structure predicts lag-`k`
+revisits (it does not: AUROC about 0.5), which supports the i.i.d. Gaussian
+surrogate used by Corollary 1. It writes `results/leakage.json`.
 
 The figures are sized for IEEE layouts: 3.5 in for a single column,
 7.16 in for the full text width. Text is set in 8 pt serif with
@@ -49,6 +56,7 @@ figures are read from `../figures/`.
 
 ```bash
 python walk_ssm_barrier.py --plots-only   # (re)draw figures from results/
+python leakage_check.py                   # -> results/leakage.json
 cd paper
 python make_numbers.py                    # -> numbers.tex, table_csl.tex
 pdflatex -interaction=nonstopmode main
@@ -57,5 +65,4 @@ pdflatex -interaction=nonstopmode main
 pdflatex -interaction=nonstopmode main    # -> main.pdf (4 pages)
 ```
 
-Before submitting: fill in the author, affiliation and footnote
-placeholders, and check the `refs.bib` fields against the publishers.
+The review that motivated the current version is in `review/`.
