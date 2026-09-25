@@ -10,15 +10,15 @@ Abstract
 An order-S linear time-invariant (LTI) state-space model must decide whether
 the current sample repeats the one k steps earlier, as random-walk graph
 learners do to detect cycles. For Gaussian inputs, exact detection requires
-S ≥ k + 1 and a singular state matrix, so invertible dynamics such as S4D and
-Mamba cannot achieve it. Since the lag-k delay has k unit Hankel singular
-values, for S < k no linear probe beats the zero probe in Hankel norm, any
-probe explains at most S/k of the delayed sample’s variance, and every readout
-has detection divergence at most $1/2\ln\frac{k}{k-S}$. Optimal fits track the
-S/k law, and a trained shift register switches on at S = k + 1. Trained
-diagonal SSMs need 4.0× the minimal state; frozen optimal poles remove most of
-this overhead for k ≤ 12. On circular skip-link graphs the remaining gap lies
-in the readout.
+S ≥ k + 1 and a singular state matrix, so LTI invertible dynamics such as S4D
+(or Mamba with a fixed step) cannot achieve it. Since the lag-k delay has k
+unit Hankel singular values, for S < k no linear probe beats the zero probe in
+Hankel norm, any probe explains at most S/k of the delayed sample’s variance,
+and every readout has detection divergence at most $1/2\ln\frac{k}{k-S}$.
+Optimal fits track the S/k law, and a trained shift register switches on at
+S = k + 1. Trained diagonal SSMs need 4.0× the minimal state to reach AUROC
+0.95; frozen optimal poles remove most of this overhead for k ≤ 12. On
+circular skip-link graphs the remaining gap lies downstream of the dynamics.
 
 Index Terms: State-space models, Hankel operators, model order reduction,
 detection, random walks on graphs.
@@ -70,16 +70,17 @@ Hashimoto (NB) operator [24, 25].
 Limits
 
 Let x_(t) be i.i.d. 𝒩(0,I_(d)) with a stationary past, and test H₁:
-x_(t) = x_(t − k) against H₀: x_(t) fresh, from (s_(t),x_(t)) of an LTI model.
-(a) If S ≤ k, or (b) if A is invertible (any S), every readout g has Bayes
-error  > 0. (c) If S ≥ k + 1, a singular A suffices: the shift register
+x_(t) = x_(t − k) against H₀: x_(t) fresh, from (s_(t),x_(t)) of a stable LTI
+model. (a) If S ≤ k, or (b) if A is invertible (any S), every readout g has
+Bayes error  > 0. (c) If S ≥ k + 1, a singular A suffices: the shift register
 s_(t) = (w^(⊤)x_(t),…,w^(⊤)x_(t − S + 1)) with
 g = 1[w^(⊤)x_(t)=(s_(t))_(k + 1)] has zero error for every w ≠ 0.
 
 Proof. Under both hypotheses (s_(t),x_(t)) is zero-mean Gaussian, so the two
-laws are either equivalent (error  > 0) or mutually singular. Singularity
-needs a^(⊤)s_(t) + b^(⊤)x_(t) = 0 a.s. under H₁ but not under H₀. Since
-s_(t − 1) has the same law under both, this means
+laws are either equivalent (error  > 0) or mutually singular. The support
+under H₁ lies in that under H₀, where x_(t) is free given s_(t − 1). So
+singularity needs a^(⊤)s_(t) + b^(⊤)x_(t) = 0 a.s. under H₁ but not under H₀.
+Since s_(t − 1) has the same law under both, this means
 a^(⊤)As_(t − 1) = v^(⊤)x_(t − k) a.s. with v =  − (B^(⊤)a+b) ≠ 0,
 i.e. a^(⊤)A^(m)B = δ_(m, k)v^(⊤) for all m ≥ 1: an exact FIR realisation of
 v^(⊤)z^(−k) by (A,AB,a). (a) Its Hankel matrix has rank k, so S ≥ k. At S = k
@@ -89,13 +90,18 @@ is invertible, a^(⊤)A^(k + 1)A^(j)B = 0 for all j ≥ 0 makes a or
 A^(k + 1)ℛ = ℛ, the reachable space, so v = 0. (c) Under H₀,
 w^(⊤)x_(t) ≠ w^(⊤)x_(t − k) a.s.
 
+At S = k the error in (a) can nonetheless be made arbitrarily small
+(Theorem 1), so the threshold S ≥ k + 1 concerns exactness, not a practical
+barrier.
+
 Exactness over all token sequences is stronger: it needs S ≥ (k+1)d, because
-the subspaces A^(j)Bℝ^(d), j = 0, …, k, must be independent. Every S4D or
-Mamba discretisation A = exp (ΔΛ) is invertible, so exact detection is never
-available to them. The relevant question is how well an order-S state can
-carry the lag-k sample. A linear probe z_(t) = c^(⊤)s_(t) + β^(⊤)x_(t)
-estimates w^(⊤)x_(t − k) with ∥w∥ = 1. Its error
-z_(t) − w^(⊤)x_(t − k) = ∑_(m ≥ 0)e_(m)x_(t − m) has taps
+the subspaces A^(j)Bℝ^(d), j = 0, …, k, must be independent.
+
+Every S4D discretisation A = exp (ΔΛ), and Mamba’s with a fixed step, is
+invertible, so exact detection is never available to these LTI models. The
+relevant question is how well an order-S state can carry the lag-k sample. A
+linear probe z_(t) = c^(⊤)s_(t) + β^(⊤)x_(t) estimates w^(⊤)x_(t − k) with
+∥w∥ = 1. Its error z_(t) − w^(⊤)x_(t − k) = ∑_(m ≥ 0)e_(m)x_(t − m) has taps
 e_(m) = c^(⊤)A^(m)B − δ_(m, k)w^(⊤) for m ≥ 1 and transfer function
 E(z) = ∑_(m ≥ 1)e_(m)z^(−m), with ∥E(e^(jω))∥ the Euclidean norm of the 1 × d
 row. Let ℋ_(k)(f) be the k × kd block-Hankel section with (i,j) block
@@ -166,7 +172,7 @@ to 8 and is unchanged for τ ∈ [10⁻⁴,3⋅10⁻³] (Table I). W^(*) is
 exact access. An order-S reader with S < W^(*) still explains up to S/ℓ of the
 lag-ℓ variance. We therefore expect pooled estimators to succeed below W^(*),
 at a sample cost that grows as S/W^(*) shrinks, since each token carries
-divergence of order S/(2ℓ).
+divergence at most about S/(2ℓ).
 
 Experiments
 
@@ -205,13 +211,13 @@ S/k (Fig. 3). We checked the surrogate against walk structure with logistic
 regression on all pairwise coincidences among the S most recent tokens, which
 is what a shift register can compare. For S ≤ k − 3 these predict lag-k
 revisits at AUROC 0.49–0.51, i.e. not at all. Within two lags of k they reach
-0.53 (S = k − 2), 0.58 (S = k − 1) and 0.67 (S = k), because a closed walk
-that leaves and returns along the same path makes stored tokens coincide. The
-surrogate is therefore fair for S ≤ k − 3. The input-dependent step changes
-the AUROC by  − 0.001±0.002 (mean over cells, |Δ| ≤ 0.03; Wilcoxon p = 0.005,
-paired t-test p = 0.14), a negligible difference. Its learned Δ_(t) varies by
-only 1% across tokens, which is expected because random features give the gate
-nothing to select on.
+up to 0.53 (S = k − 2), 0.58 (S = k − 1) and 0.67 (S = k), because a closed
+walk that leaves and returns along the same path makes stored tokens coincide.
+The surrogate is therefore fair for S ≤ k − 3. The input-dependent step
+changes the AUROC by  − 0.001±0.002 (mean over cells, |Δ| ≤ 0.03; Wilcoxon
+p = 0.005, paired t-test p = 0.14), a negligible difference. Its learned Δ_(t)
+varies by only 1% across tokens, which is expected because random features
+give the gate nothing to select on.
 
 [FIGURE – file: figures/fig2_phase_diagram.pdf]
 
@@ -270,9 +276,13 @@ The input-dependent step is  − 1.7±1.1 points from LTI (paired over S and
 seeds). The dynamics are not the bottleneck either. A trained shift register
 has exact access to all lags  ≤ S − 1, with the same readout, pooling and
 labels. It reaches only 47.2% at S = 9, where the reference with lags  ≤ 8
-reaches 96.0%, and 53.6±2.0% at S = 32. On CSL the gap therefore lies in
-learning per-lag revisit statistics through the readout and mean pooling from
-graph-level labels. Class r = 2 (W^(*) = 3) is learned at S = 2 only by
+reaches 96.0%, and 53.6±2.0% at S = 32. On CSL the gap therefore lies
+downstream of the dynamics, in the readout and mean pooling. Graph-level
+labels alone do not explain it, since the LTI model with a token-level revisit
+loss does no better. The shift register still tests Proposition 1(c) at the
+graph level: it first reaches 80% on classes r = 2, 3 and 13 at S = 4, 6 and 6
+(Table I). This is the first tested S ≥ W^(*)(r) + 1, the smallest register
+that holds lag W^(*)(r). Class r = 2 (W^(*) = 3) is learned at S = 2 only by
 pooling: with one walk its accuracy is 53.7%, and with 16 walks it is 86.3%.
 
 [FIGURE – file: figures/fig4_csl_accuracy.pdf]
@@ -307,9 +317,10 @@ respect them but need several times the minimal state. For k ≤ 12, frozen
 optimal poles remove most of this overhead. On random-feature inputs, where
 the gate stays inactive, an input-dependent step does not change it. On CSL
 graphs, even exact lag access through a shift register leaves trained models
-far below exact counts, so there the bottleneck is learning revisit statistics
-from graph-level labels. Lower bounds for input-dependent dynamics and
-better-conditioned delay parameterisations are natural next steps.
+far below exact counts, so there the bottleneck lies downstream of the
+dynamics, in the readout and pooling. Lower bounds for input-dependent
+dynamics and better-conditioned delay parameterisations are natural next
+steps.
 
 REFERENCES
 

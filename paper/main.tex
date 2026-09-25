@@ -44,16 +44,16 @@ State-Space Models, with Application to Graph Random Walks}
 An order-$S$ linear time-invariant (LTI) state-space model must decide
 whether the current sample repeats the one $k$ steps earlier, as random-walk
 graph learners do to detect cycles. For Gaussian inputs, exact detection
-requires $S\ge k+1$ and a singular state matrix, so invertible dynamics such
-as S4D and Mamba cannot achieve it. Since the lag-$k$ delay has $k$ unit
+requires $S\ge k+1$ and a singular state matrix, so LTI invertible dynamics
+such as S4D (or Mamba with a fixed step) cannot achieve it. Since the lag-$k$ delay has $k$ unit
 Hankel singular values, for $S<k$ no linear probe beats the zero probe in
 Hankel norm, any probe explains at most $S/k$ of the delayed sample's
 variance, and every readout has detection divergence at most
 $\tfrac12\ln\frac{k}{k-S}$. Optimal fits track the $S/k$ law, and a trained
 shift register switches on at $S=k+1$. Trained diagonal SSMs need
-\ratioLTIc$\times$ the minimal state; frozen optimal poles remove most of
-this overhead for $k\le12$. On circular skip-link graphs the remaining gap
-lies in the readout.
+\ratioLTIc$\times$ the minimal state to reach AUROC $0.95$; frozen optimal
+poles remove most of this overhead for $k\le12$. On circular skip-link
+graphs the remaining gap lies downstream of the dynamics.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -115,16 +115,18 @@ follow from powers of the Hashimoto (NB) operator~\cite{hashimoto1989zeta,alon20
 \section{Limits}
 \begin{proposition}[Exact detection]\label{prop:exact}
 Let $x_t$ be i.i.d.\ $\mathcal N(0,I_d)$ with a stationary past, and test
-$H_1$: $x_t=x_{t-k}$ against $H_0$: $x_t$ fresh, from $(s_t,x_t)$ of an LTI
-model. (a) If $S\le k$, or (b) if $A$ is invertible (any $S$), every readout
+$H_1$: $x_t=x_{t-k}$ against $H_0$: $x_t$ fresh, from $(s_t,x_t)$ of a
+stable LTI model. (a) If $S\le k$, or (b) if $A$ is invertible (any $S$), every readout
 $g$ has Bayes error $>0$. (c) If $S\ge k+1$, a singular $A$ suffices: the
 shift register $s_t=(w^\top x_t,\dots,w^\top x_{t-S+1})$ with
 $g=\one[w^\top x_t=(s_t)_{k+1}]$ has zero error for every $w\ne0$.
 \end{proposition}
 \begin{IEEEproof}
 Under both hypotheses $(s_t,x_t)$ is zero-mean Gaussian, so the two laws are
-either equivalent (error $>0$) or mutually singular. Singularity needs
-$a^\top s_t+b^\top x_t=0$ a.s.\ under $H_1$ but not under $H_0$. Since
+either equivalent (error $>0$) or mutually singular. The support under
+$H_1$ lies in that under $H_0$, where $x_t$ is free given $s_{t-1}$. So
+singularity needs $a^\top s_t+b^\top x_t=0$ a.s.\ under $H_1$ but not under
+$H_0$. Since
 $s_{t-1}$ has the same law under both, this means
 $a^\top As_{t-1}=v^\top x_{t-k}$ a.s.\ with $v=-(B^\top a+b)\ne0$, i.e.\
 $a^\top A^mB=\delta_{m,k}v^\top$ for all $m\ge1$: an exact FIR realisation of
@@ -136,11 +138,17 @@ $j\ge0$ makes $a$ orthogonal to $A^{k+1}\mathcal R=\mathcal R$, the reachable
 space, so $v=0$. (c) Under $H_0$, $w^\top x_t\ne w^\top x_{t-k}$ a.s.
 \end{IEEEproof}
 
+At $S=k$ the error in (a) can nonetheless be made arbitrarily small
+(Theorem~\ref{thm:hankel}), so the threshold $S\ge k+1$ concerns exactness,
+not a practical barrier.
+
 Exactness over \emph{all} token sequences is stronger: it needs
 $S\ge(k+1)d$, because the subspaces $A^jB\R^d$, $j=0,\dots,k$, must be
 independent.
-Every S4D or Mamba discretisation $A=\exp(\Delta\Lambda)$ is invertible, so
-exact detection is never available to them. The relevant question is how
+
+Every S4D discretisation $A=\exp(\Delta\Lambda)$, and Mamba's with a fixed
+step, is invertible, so exact detection is never available to these LTI
+models. The relevant question is how
 \emph{well} an order-$S$ state can carry the lag-$k$ sample. A linear
 probe $z_t=c^\top s_t+\beta^\top x_t$ estimates $w^\top x_{t-k}$ with
 $\|w\|=1$. Its error $z_t-w^\top x_{t-k}=\sum_{m\ge0}e_mx_{t-m}$ has taps
@@ -232,7 +240,7 @@ to \cslWmax{} and is unchanged for $\tau\in[10^{-4},3\cdot10^{-3}]$
 order-$S$ reader with $S<W^*$ still explains up to $S/\ell$ of the
 lag-$\ell$ variance. We therefore expect pooled estimators to succeed below
 $W^*$, at a sample cost that grows as $S/W^*$ shrinks, since each token
-carries divergence of order $S/(2\ell)$.
+carries divergence at most about $S/(2\ell)$.
 
 \section{Experiments}\label{sec:exp}
 \textit{Models.} Our learned SSM is one diagonal complex layer with
@@ -277,7 +285,7 @@ variance $S/k$ (Fig.~\ref{fig:ratio}). We checked the surrogate against walk
 structure with logistic regression on all pairwise coincidences among the $S$
 most recent tokens, which is what a shift register can compare. For
 $S\le k-3$ these predict lag-$k$ revisits at AUROC \pairLeLo--\pairLeHi,
-i.e.\ not at all. Within two lags of $k$ they reach \pairKmTwoHi{} ($S=k-2$),
+i.e.\ not at all. Within two lags of $k$ they reach up to \pairKmTwoHi{} ($S=k-2$),
 \pairKmOneHi{} ($S=k-1$) and \pairKHi{} ($S=k$), because a closed walk that
 leaves and returns along the same path makes stored tokens coincide. The
 surrogate is therefore fair for $S\le k-3$. The input-dependent step changes
@@ -354,8 +362,13 @@ either. A trained shift register has exact access to all lags $\le S-1$,
 with the same readout, pooling and labels. It reaches only
 \cslShiftAtNine\% at $S=9$, where the reference with lags $\le8$ reaches
 \cslOrAtEight\%, and \cslShiftBest$\pm$\cslShiftBestCI\% at
-$S=\cslShiftBestS$. On CSL the gap therefore lies in learning per-lag revisit
-statistics through the readout and mean pooling from graph-level labels. Class $r=2$ ($W^*=3$) is learned at $S=2$ only by
+$S=\cslShiftBestS$. On CSL the gap therefore lies downstream of the dynamics,
+in the readout and mean pooling. Graph-level labels alone do not explain it,
+since the LTI model with a token-level revisit loss does no better. The shift
+register still tests Proposition~\ref{prop:exact}(c) at the graph level: it
+first reaches 80\% on classes $r=2$, $3$ and $13$ at $S=4$, $6$ and $6$
+(Table~\ref{tab:csl}). This is the first tested $S\ge W^*(r)+1$, the
+smallest register that holds lag $W^*(r)$. Class $r=2$ ($W^*=3$) is learned at $S=2$ only by
 pooling: with one walk its accuracy is \poolTwoOne\%, and with 16 walks it
 is \poolTwoSixteen\%.
 
@@ -391,8 +404,8 @@ minimal state. For $k\le12$, frozen optimal poles remove most of this
 overhead. On random-feature inputs, where the gate stays inactive, an
 input-dependent step does not change it. On CSL graphs, even exact lag
 access through a shift register leaves trained models far below exact counts,
-so there the bottleneck is learning revisit statistics from graph-level
-labels. Lower bounds for
+so there the bottleneck lies downstream of the dynamics, in the readout and
+pooling. Lower bounds for
 input-dependent dynamics and better-conditioned delay parameterisations are
 natural next steps.
 
