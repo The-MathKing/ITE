@@ -42,17 +42,18 @@ State-Space Models, with Application to Graph Random Walks}
 
 \begin{abstract}
 An order-$S$ linear time-invariant (LTI) state-space model must decide
-whether the current sample repeats the one $k$ steps earlier, the primitive
-behind cycle detection by random-walk graph learners. For Gaussian inputs,
-exact detection requires $S\ge k+1$ and a singular state matrix, so it is
-unavailable to invertible dynamics such as S4D and Mamba. The lag-$k$ delay
-has $k$ unit Hankel singular values. Hence for $S<k$ no linear probe beats
-the zero probe in Hankel norm, any probe explains at most $S/k$ of the
-delayed sample's variance, and every readout has detection divergence at
-most $\tfrac12\ln\frac{k}{k-S}$. Optimal fits track the $S/k$ law, and a
-trained shift register switches on at $S=k+1$. Trained diagonal SSMs respect
-the bounds but need \ratioLTIc$\times$ the minimal state; freezing their
-poles at the optimal fit removes most of this overhead for $k\le12$.
+whether the current sample repeats the one $k$ steps earlier, as random-walk
+graph learners do to detect cycles. For Gaussian inputs, exact detection
+requires $S\ge k+1$ and a singular state matrix, so invertible dynamics such
+as S4D and Mamba cannot achieve it. Since the lag-$k$ delay has $k$ unit
+Hankel singular values, for $S<k$ no linear probe beats the zero probe in
+Hankel norm, any probe explains at most $S/k$ of the delayed sample's
+variance, and every readout has detection divergence at most
+$\tfrac12\ln\frac{k}{k-S}$. Optimal fits track the $S/k$ law, and a trained
+shift register switches on at $S=k+1$. Trained diagonal SSMs need
+\ratioLTIc$\times$ the minimal state; frozen optimal poles remove most of
+this overhead for $k\le12$. On circular skip-link graphs the remaining gap
+lies in the readout.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -93,9 +94,9 @@ norm, the explained variance is at most $S/k$, and for Gaussian inputs this
 bounds the divergence available to every readout;
 (iii) \emph{graph consequence}: exact non-backtracking (NB) return horizons
 $W^*(r)$ at which window features separate each CSL class; and
-(iv) \emph{validation}: optimal fits, a shift-register control, frozen fitted
-poles and seeded experiments that separate the information limit from the
-optimisation overhead of trained SSMs.
+(iv) \emph{validation}: optimal fits, shift-register and frozen-pole
+controls, and seeded experiments that separate the information limit, the
+optimisation of the dynamics and the readout.
 
 \section{Problem Setting}
 A sequence model with real state $s_t\in\R^S$ reads tokens $x_t\in\R^d$:
@@ -258,7 +259,7 @@ attained by direct fitting.
 \centering
 \includegraphics[width=\columnwidth]{fig1_delay_realization.pdf}
 \caption{Best gradient fit (four restarts, taps $m\le63$) of an $S$-state
-diagonal LTI impulse response to the lag-$k$ delay. Dotted lines: the lower
+diagonal LTI impulse response to the lag-$k$ delay. Shaded curves: the lower
 bound $\sqrt{1-S/k}$ of Theorem~\ref{thm:hankel} for $S<k$.}
 \label{fig:delay}
 \end{figure}
@@ -348,9 +349,13 @@ $S=\cslAuxBestS$.
 accuracy by \cslEvalLenGain{} points.
 \end{itemize}
 The input-dependent step is \cslSelMinusLTI$\pm$\cslSelMinusLTICI{} points
-from LTI (paired over $S$ and seeds). By the token-level controls, the
-likely bottleneck is learning precise poles for several class-specific lags
-from a pooled graph label, but we do not isolate it here. Class $r=2$ ($W^*=3$) is learned at $S=2$ only by
+from LTI (paired over $S$ and seeds). The dynamics are not the bottleneck
+either. A trained shift register has exact access to all lags $\le S-1$,
+with the same readout, pooling and labels. It reaches only
+\cslShiftAtNine\% at $S=9$, where the reference with lags $\le8$ reaches
+\cslOrAtEight\%, and \cslShiftBest$\pm$\cslShiftBestCI\% at
+$S=\cslShiftBestS$. On CSL the gap therefore lies in learning per-lag revisit
+statistics through the readout and mean pooling from graph-level labels. Class $r=2$ ($W^*=3$) is learned at $S=2$ only by
 pooling: with one walk its accuracy is \poolTwoOne\%, and with 16 walks it
 is \poolTwoSixteen\%.
 
@@ -384,7 +389,10 @@ $\tfrac12\ln\frac{k}{k-S}$. Optimal fits and a shift register attain these
 limits. Trained diagonal SSMs respect them but need several times the
 minimal state. For $k\le12$, frozen optimal poles remove most of this
 overhead. On random-feature inputs, where the gate stays inactive, an
-input-dependent step does not change it. \CSLConclusion{} Lower bounds for
+input-dependent step does not change it. On CSL graphs, even exact lag
+access through a shift register leaves trained models far below exact counts,
+so there the bottleneck is learning revisit statistics from graph-level
+labels. Lower bounds for
 input-dependent dynamics and better-conditioned delay parameterisations are
 natural next steps.
 
